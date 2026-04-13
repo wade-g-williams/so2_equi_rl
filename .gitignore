@@ -1,0 +1,33 @@
+# Reference materials
+/reference
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Environments
+.venv/
+venv/
+.conda/
+
+# Training outputs
+outputs/
+checkpoints/
+wandb/
+runs/
+*.pt
+*.pth
+
+# Testing
+.pytest_cache/
+
+# Env
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "so2_equi_rl"
+version = "0.1.0"
+description = "SO(2)-equivariant reinforcement learning for robotics"
+readme = "README.md"
+requires-python = ">=3.7,<3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Wade Williams", email = "wadewilliams6@icloud.com" },
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
