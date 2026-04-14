@@ -23,6 +23,8 @@ runs/
 *.pt
 *.pth
 
+# Scripts
+
 # Testing
 .pytest_cache/
 
