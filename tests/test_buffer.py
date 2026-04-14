@@ -43,11 +43,9 @@ def test_shapes_and_dtypes():
     assert sample.next_state.shape == (64, state_dim)
     assert sample.next_obs.shape == (64, 1, 128, 128)
     assert sample.done.shape == (64,)
-    assert sample.step_left.shape == (64,)
-    assert sample.expert.shape == (64,)
     assert sample.state.dtype == torch.float32
     assert sample.obs.dtype == torch.float32
-    assert sample.expert.dtype == torch.bool
+    assert sample.done.dtype == torch.float32
     print("shape + dtype check OK")
 
 
@@ -74,7 +72,7 @@ def test_round_trip():
     )
     assert len(buf) == 1
 
-    # _size == 1, so randint(0, 1) deterministically returns 0.
+    # _size == 1, so integers(0, 1) deterministically returns 0.
     batch = buf.sample(batch_size=1)
     assert torch.equal(batch.state, s), "state mismatch"
     assert torch.equal(batch.obs, o), "obs mismatch"

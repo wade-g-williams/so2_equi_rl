@@ -1,7 +1,19 @@
-"""Fixed-capacity uniform replay buffer
+"""Uniform replay buffer for off-policy pixel-based RL.
 
-Stores transitions in a fixed-capacity uniform buffer, with a fixed-size
-batch of transitions sampled uniformly at random.
+Public API:
+    ReplayBuffer(capacity, state_dim, obs_shape, action_dim, seed=None)
+    buf.push(states, obs, actions, rewards, next_states, next_obs, dones)
+    buf.sample(batch_size) -> Transition
+    len(buf)
+
+Transition field shapes (per-sample):
+    state       (state_dim,)    float32   scalar gripper open/close
+    obs         (1, H, W)       float32   top-down heightmap
+    action      (action_dim,)   float32   (p, x, y, z, r)
+    reward      ()              float32
+    next_state  (state_dim,)    float32
+    next_obs    (1, H, W)       float32
+    done        ()              float32   float so Bellman (1-d) is cast-free
 """
 
 import collections
@@ -12,22 +24,12 @@ import torch
 
 Transition = collections.namedtuple(
     "Transition",
-    [
-        "state",
-        "obs",
-        "action",
-        "reward",
-        "next_state",
-        "next_obs",
-        "done",
-        "step_left",
-        "expert",
-    ],
+    ["state", "obs", "action", "reward", "next_state", "next_obs", "done"],
 )
 
 
 class ReplayBuffer:
-    """Uniform replay buffer with fixed-capacity."""
+    """Uniform replay buffer with fixed capacity."""
 
     def __init__(
         self,
@@ -35,26 +37,25 @@ class ReplayBuffer:
         state_dim: int,
         obs_shape: Tuple[int, int, int],
         action_dim: int,
+        seed: Optional[int] = None,
     ) -> None:
         self.capacity = capacity
 
-        # One column per transition field.
+        # Instance-local RNG so seeding the buffer doesn't touch the
+        # global numpy RNG.
+        self._rng = np.random.default_rng(seed)
+
         self._states = np.zeros((capacity, state_dim), dtype=np.float32)
         self._obs = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self._actions = np.zeros((capacity, action_dim), dtype=np.float32)
         self._rewards = np.zeros((capacity,), dtype=np.float32)
         self._next_states = np.zeros((capacity, state_dim), dtype=np.float32)
         self._next_obs = np.zeros((capacity, *obs_shape), dtype=np.float32)
-
-        # float32, not bool -- lets Bellman target compute (1 - done)
-        # without dtype cast each gradient step.
         self._dones = np.zeros((capacity,), dtype=np.float32)
-        self._step_lefts = np.zeros((capacity,), dtype=np.int32)
-        self._experts = np.zeros((capacity,), dtype=np.bool_)
 
         # Ring-buffer pointers.
         self._idx = 0  # write index for next transition
-        self._size = 0  # number of transitions in buffer
+        self._size = 0  # number of transitions currently stored
 
     def push(
         self,
@@ -65,8 +66,6 @@ class ReplayBuffer:
         next_states: torch.Tensor,
         next_obs: torch.Tensor,
         dones: torch.Tensor,
-        step_lefts: Optional[torch.Tensor] = None,
-        experts: Optional[torch.Tensor] = None,
     ) -> None:
         batch = states.shape[0]
         if batch > self.capacity:
@@ -74,7 +73,6 @@ class ReplayBuffer:
                 "batch size {} exceeds buffer capacity {}".format(batch, self.capacity)
             )
 
-        # Required fields to numpy.
         states_np = states.detach().cpu().numpy().astype(np.float32)
         obs_np = obs.detach().cpu().numpy().astype(np.float32)
         actions_np = actions.detach().cpu().numpy().astype(np.float32)
@@ -83,17 +81,7 @@ class ReplayBuffer:
         next_obs_np = next_obs.detach().cpu().numpy().astype(np.float32)
         dones_np = dones.detach().cpu().numpy().astype(np.float32)
 
-        # Defaults for the optional fields.
-        if step_lefts is None:
-            step_lefts_np = np.zeros((batch,), dtype=np.int32)
-        else:
-            step_lefts_np = step_lefts.detach().cpu().numpy().astype(np.int32)
-        if experts is None:
-            experts_np = np.zeros((batch,), dtype=np.bool_)
-        else:
-            experts_np = experts.detach().cpu().numpy().astype(np.bool_)
-
-        # Modulo wraps the indices when the batch crosses the end of the array.
+        # Modulo wraps indices when the batch crosses the end of the array.
         idxs = (self._idx + np.arange(batch)) % self.capacity
 
         self._states[idxs] = states_np
@@ -103,10 +91,7 @@ class ReplayBuffer:
         self._next_states[idxs] = next_states_np
         self._next_obs[idxs] = next_obs_np
         self._dones[idxs] = dones_np
-        self._step_lefts[idxs] = step_lefts_np
-        self._experts[idxs] = experts_np
 
-        # Advance write head; size saturates at capacity.
         self._idx = (self._idx + batch) % self.capacity
         self._size = min(self._size + batch, self.capacity)
 
@@ -114,9 +99,12 @@ class ReplayBuffer:
         if self._size == 0:
             raise ValueError("cannot sample from an empty ReplayBuffer")
 
-        # Uniform random indices; replacement is acceptable at usual batch sizes.
-        idxs = np.random.randint(0, self._size, size=batch_size)
+        # Uniform with replacement. If batch_size > _size during warmup,
+        # entries repeat, which is standard for off-policy replay.
+        idxs = self._rng.integers(0, self._size, size=batch_size)
 
+        # self._states[idxs] is fancy indexing, which copies, so the
+        # returned tensors are decoupled from buffer storage.
         return Transition(
             state=torch.from_numpy(self._states[idxs]),
             obs=torch.from_numpy(self._obs[idxs]),
@@ -125,8 +113,6 @@ class ReplayBuffer:
             next_state=torch.from_numpy(self._next_states[idxs]),
             next_obs=torch.from_numpy(self._next_obs[idxs]),
             done=torch.from_numpy(self._dones[idxs]),
-            step_left=torch.from_numpy(self._step_lefts[idxs]),
-            expert=torch.from_numpy(self._experts[idxs]),
         )
 
     def __len__(self) -> int:

@@ -1,7 +1,17 @@
-"""Adapter between helping_hands_rl_envs and the rest of the codebase.
+"""PyBullet env adapter for the close-loop manipulation task family.
 
-Wraps the library's Runner (SingleRunner for num_processes=0, MultiRunner
-for num_processes>0) behind a uniform interface.
+Public API:
+    EnvWrapper(env_name, num_processes=0, seed=0, obs_size=128, ...)
+    env.reset()                 -> (states, obs)
+    env.step(actions)           -> (next_states, next_obs, rewards, dones)
+    env.get_expert_action()     -> actions from the scripted planner
+    env.close()
+
+    Attributes: env_name, batch_size, action_dim, state_dim, obs_size
+
+Contract: all tensors are always batched; batch_size == max(num_processes, 1).
+Wraps helping_hands_rl_envs.env_factory.createEnvs and matches the paper's
+utils/env_wrapper.py API surface with a single-process special case.
 """
 
 from typing import Optional, Tuple
@@ -27,7 +37,9 @@ _DEFAULT_WORKSPACE = np.asarray(
 )
 
 
-# The close-loop task family
+# Close-loop manipulation tasks from helping_hands_rl_envs. Restricting the
+# wrapper to this set means obs is always a pure top-down heightmap (no
+# in-hand camera), which is what the paper's main results use.
 _CLOSE_LOOP_ENVS = {
     "close_loop_block_picking",
     "close_loop_block_reaching",
@@ -63,9 +75,10 @@ class EnvWrapper:
             )
 
         if workspace is None:
-            workspace = _DEFAULT_WORKSPACE
+            # Copy so downstream mutation can't clobber the module-level default.
+            workspace = _DEFAULT_WORKSPACE.copy()
 
-        # env_config is the dict the library's createEnvs() uses. (same as paper)
+        # env_config is the dict the library's createEnvs() uses.
         env_config = {
             "workspace": workspace,
             "max_steps": max_steps,  # episode length cap
@@ -80,9 +93,9 @@ class EnvWrapper:
             "seed": seed,
         }
 
-        # planner_config parameterizes the library's scripted expert demonstrator.
-        # dpos/drot are the physical step sizes the planner uses when deciding its own
-        # action magnitudes (5 cm per position step, 22.5 degrees per rotation step).
+        # planner_config configures the library's scripted expert.
+        # dpos/drot are the per-step magnitudes it uses (5 cm position,
+        # 22.5 deg rotation).
         if planner_config is None:
             planner_config = {
                 "random_orientation": False,
@@ -96,9 +109,6 @@ class EnvWrapper:
             num_processes, "pybullet", env_name, env_config, planner_config
         )
 
-        # Public metadata. Downstream modules (networks, buffer, train
-        # loop) read these to size tensors without having to step the
-        # env first to learn its shapes.
         self.env_name = env_name
         self.num_processes = num_processes
         self.action_dim = len(action_sequence)  # "pxyzr" -> 5
@@ -109,7 +119,7 @@ class EnvWrapper:
         self._is_single = num_processes == 0
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Discard hand_obs -- unused for close-loop tasks.
+        # Discard hand_obs. Unused for close-loop tasks.
         states, _in_hand, obs = self._runner.reset()
         return self._to_batched_obs(states, obs)
 
@@ -134,15 +144,7 @@ class EnvWrapper:
         if self._is_single:
             actions_np = actions_np[0]
 
-        # Both runners can return a 4-tuple (obs, rewards, dones, metadata)
-        # if the underlying env emits metadata. Close-loop tasks in fast_mode
-        # don't, but assert to fail fast with a clear message if that changes.
-        result = self._runner.step(actions_np)
-        assert len(result) == 3, (
-            "unexpected step() return shape (len={}); "
-            "metadata path not supported".format(len(result))
-        )
-        (states, _in_hand, obs), rewards, dones = result
+        (states, _in_hand, obs), rewards, dones = self._runner.step(actions_np)
 
         states_t, obs_t = self._to_batched_obs(states, obs)
 
@@ -162,7 +164,7 @@ class EnvWrapper:
         )
 
     def get_expert_action(self) -> torch.Tensor:
-        # Library's scripted planner -- used to bootstrap the replay
+        # Library's scripted planner. Used to bootstrap the replay
         # buffer with demo episodes before SAC training starts.
         actions = self._runner.getNextAction()
         actions = np.asarray(actions, dtype=np.float32)
@@ -176,7 +178,7 @@ class EnvWrapper:
     def _to_batched_obs(
         self, states: np.ndarray, obs: np.ndarray
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Reshape to contract shape directly -- robust to both runners'
+        # Reshape directly to the contract shape; handles both runners'
         # inner shapes (Single: (1,)/(1,H,W); Multi: (N,1)/(N,1,H,W)).
         states = np.asarray(states, dtype=np.float32).reshape(
             self.batch_size, self.state_dim
