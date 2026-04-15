@@ -1,14 +1,8 @@
-"""Standard replay buffer.
+"""Fixed-capacity replay buffer backed by preallocated numpy arrays.
 
-Backed by preallocated numpy arrays instead of a Python deque or torch
-tensors. Preallocation keeps memory flat over long training runs, and
-numpy indexing makes random sampling O(batch_size) with no graph-tracking
-overhead.
-
-- Fixed-size ring buffer. Once it's full, each new transition
-  overwrites the oldest one.
-- Stores (state, obs, action, reward, next_state, next_obs, done)
-- Samples a uniform random batch when the agent asks for one.
+Replay buffer: once full, each new transition overwrites the oldest.
+Stores (state, obs, action, reward, next_state, next_obs, done) and
+samples uniform random batches.
 """
 
 import collections
@@ -28,7 +22,7 @@ def _as_np(t: torch.Tensor) -> np.ndarray:
 
 
 class ReplayBuffer:
-    """Fixed-capacity ring buffer over (state, obs, action, reward, next_state, next_obs, done)."""
+    """Fixed-capacity replay buffer over (state, obs, action, reward, next_state, next_obs, done)."""
 
     def __init__(
         self,
@@ -38,6 +32,8 @@ class ReplayBuffer:
         action_dim: int,
         seed: int = 0,
     ) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive, got {}".format(capacity))
         self.capacity = capacity
         self._rng = np.random.default_rng(seed)
 
@@ -67,14 +63,26 @@ class ReplayBuffer:
             raise ValueError(
                 "batch size {} exceeds buffer capacity {}".format(batch, self.capacity)
             )
-        # rewards/dones must be (B,), not (B,1) — the latter would broadcast
-        # into self._rewards[idxs] silently and corrupt the buffer.
-        assert rewards.shape == (batch,), "rewards must be shape ({},), got {}".format(
-            batch, tuple(rewards.shape)
-        )
-        assert dones.shape == (batch,), "dones must be shape ({},), got {}".format(
-            batch, tuple(dones.shape)
-        )
+
+        # Check every field's shape. rewards/dones as (B, 1) would broadcast
+        # into self._rewards[idxs] silently and corrupt the buffer; the other
+        # fields would fail later in numpy assignment with a less obvious error.
+        expected = {
+            "states": (states, (batch, self._states.shape[1])),
+            "obs": (obs, (batch, *self._obs.shape[1:])),
+            "actions": (actions, (batch, self._actions.shape[1])),
+            "rewards": (rewards, (batch,)),
+            "next_states": (next_states, (batch, self._next_states.shape[1])),
+            "next_obs": (next_obs, (batch, *self._next_obs.shape[1:])),
+            "dones": (dones, (batch,)),
+        }
+        for name, (tensor, shape) in expected.items():
+            if tuple(tensor.shape) != shape:
+                raise ValueError(
+                    "{} must be shape {}, got {}".format(
+                        name, shape, tuple(tensor.shape)
+                    )
+                )
 
         states_np = _as_np(states)
         obs_np = _as_np(obs)

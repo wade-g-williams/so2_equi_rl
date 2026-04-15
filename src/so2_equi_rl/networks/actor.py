@@ -6,7 +6,7 @@ from typing import Tuple
 import torch
 from torch.distributions import Normal
 from e2cnn import nn as enn
-from so2_equi_rl.networks.equi_encoder import EquiEncoder
+from so2_equi_rl.networks.equi_encoder import EquiEncoder, irrep1_multiplicity
 
 # Bounds we clamp log_std to before sampling, plus a small epsilon
 # that keeps the tanh log-prob correction numerically stable.
@@ -67,9 +67,7 @@ class EquiActor(SACGaussianPolicyBase):
         self.n_hidden = n_hidden
         self.group_order = group_order
 
-        # irrep(1) is 2-D for C_N when N >= 3, so one copy covers (dx, dy).
-        # For N = 2 it's 1-D, so we need two copies to get both components.
-        self.n_rho1 = 2 if group_order == 2 else 1
+        self.n_rho1 = irrep1_multiplicity(group_order)
 
         # The actor keeps its own encoder. We don't share with the critic.
         self.encoder = EquiEncoder(
@@ -80,11 +78,11 @@ class EquiActor(SACGaussianPolicyBase):
         gspace = self.encoder.gspace
 
         # Final 1x1 equivariant head. One irrep(1) field (2 scalars) for the
-        # (dx, dy) mean, plus n_trivial trivial fields for the invariants:
+        # (dx, dy) mean, plus 8 trivial fields for the invariants:
         #   3 trivial -> (p, dz, dtheta) means
         #   5 trivial -> log_stds for all 5 actions
-        # 8 fields total, producing 10 scalar outputs.
-        n_trivial = 2 * action_dim - 2  # 3 invariant means + 5 log_stds
+        # 9 fields total, producing 10 scalar outputs.
+        n_trivial = 8
         head_out_type = enn.FieldType(
             gspace,
             self.n_rho1 * [gspace.irrep(1)] + n_trivial * [gspace.trivial_repr],
@@ -103,13 +101,15 @@ class EquiActor(SACGaussianPolicyBase):
         head_out = self.head(encoded)
         flat = head_out.tensor.view(obs.shape[0], -1)
 
+        # Head layout: 2 irrep(1) scalars, then 3 trivials for the invariant
+        # means (p, dz, dtheta), then 5 trivials for all log_stds.
         dxy = flat[:, 0:2]
-        inv_means = flat[:, 2:5]  # (p, dz, dtheta)
+        p = flat[:, 2:3]
+        dz_dtheta = flat[:, 3:5]
+        log_std = flat[:, 5:10]
 
         # Reassemble into the pxyzr order: (p, dx, dy, dz, dtheta).
-        mean = torch.cat([inv_means[:, 0:1], dxy, inv_means[:, 1:]], dim=1)
-
-        log_std = flat[:, 5:10]
+        mean = torch.cat([p, dxy, dz_dtheta], dim=1)
         log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
         return mean, log_std
 
@@ -129,4 +129,4 @@ class CNNActor(SACGaussianPolicyBase):
         self.n_hidden = n_hidden
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError("CNNActor body not yet implemented (phase 5)")
+        raise NotImplementedError("CNNActor body not yet implemented")

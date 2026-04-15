@@ -6,6 +6,14 @@ import torch
 from e2cnn import gspaces, nn as enn
 
 
+def irrep1_multiplicity(group_order: int) -> int:
+    # How many copies of irrep(1) we need to cover a 2D vector (dx, dy)
+    # under C_N. For N >= 3, irrep(1) is the 2D rotation rep, so one copy
+    # suffices. For N = 2, irrep(1) is the 1D sign rep; we need two copies
+    # since both components of (dx, dy) flip under a 180 deg rotation.
+    return 2 if group_order == 2 else 1
+
+
 def tile_state(obs: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
     # Broadcast the scalar gripper flag to a full (H, W) plane and stack
     # it onto the heightmap: (B,1,H,W) + (B,1) -> (B,2,H,W).

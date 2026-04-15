@@ -1,13 +1,12 @@
 """Wrapper around the helping_hands_rl_envs PyBullet task library.
 
-The library ships two different runners (one in-process, one with worker
-subprocesses) and a pile of task-specific knobs. This wrapper is the seam
-that hides both, so the rest of the codebase only sees a single batched
-env with fixed tensor shapes.
+Hides the library's two runners (in-process and worker-subprocess)
+behind one batched interface with fixed tensor shapes. Restricted to
+close-loop tasks, so obs is always a top-down heightmap.
 
-- Lets the agent talk to one sim or many parallel sims using the same tensor shapes.
-- Only supports the close-loop tasks, so the observation is always a top-down heightmap of the workspace.
-- Does no action decoding. The agent hands in a 5-D tensor and the wrapper passes it straight through to the library. All [-1, 1] -> physical scaling lives in the agent.
+No action decoding lives here: the agent hands in a 5-D tensor and the
+wrapper passes it straight through. All [-1, 1] -> physical scaling
+belongs in the agent.
 """
 
 from typing import Optional, Tuple
@@ -32,6 +31,14 @@ _DEFAULT_WORKSPACE = np.asarray(
 # The RL agent has its own dpos/drot in agents/sac.py.
 _EXPERT_DPOS = 0.05
 _EXPERT_DROT = float(np.pi / 8)
+
+# Locked env_config knobs. Lifted out of __init__ so they're greppable
+# from the top of the file when curves need debugging.
+_ACTION_SEQUENCE = "pxyzr"  # 5-D continuous action: (p, dx, dy, dz, dtheta)
+_FAST_MODE = True  # skip intermediate motion waypoints
+_RANDOM_ORIENTATION = False  # objects spawn axis-aligned
+_ROBOT = "kuka"  # Kuka LBR iiwa arm
+_PHYSICS_MODE = "fast"  # lower-fidelity physics, much faster
 
 
 # Close-loop tasks the wrapper supports. Locking to this set keeps the
@@ -58,7 +65,6 @@ class EnvWrapper:
         seed: int = 0,
         obs_size: int = 128,
         max_steps: int = 50,
-        action_sequence: str = "pxyzr",
         num_objects: int = 1,
         render: bool = False,
         workspace: Optional[np.ndarray] = None,
@@ -79,13 +85,13 @@ class EnvWrapper:
             "workspace": workspace,
             "max_steps": max_steps,  # episode length cap
             "obs_size": obs_size,  # heightmap side length (H == W)
-            "action_sequence": action_sequence,  # "pxyzr" -> 5-D continuous action
+            "action_sequence": _ACTION_SEQUENCE,
             "num_objects": num_objects,  # most tasks use 1; stacking uses 2+
             "render": render,  # True pops a GUI window; False for training
-            "fast_mode": True,  # skip intermediate motion waypoints
-            "random_orientation": False,  # objects spawn axis-aligned
-            "robot": "kuka",  # Kuka LBR iiwa arm
-            "physics_mode": "fast",  # lower-fidelity physics, much faster
+            "fast_mode": _FAST_MODE,
+            "random_orientation": _RANDOM_ORIENTATION,
+            "robot": _ROBOT,
+            "physics_mode": _PHYSICS_MODE,
             "seed": seed,
         }
 
@@ -105,7 +111,7 @@ class EnvWrapper:
 
         self.env_name = env_name
         self.num_processes = num_processes
-        self.action_dim = len(action_sequence)  # "pxyzr" -> 5
+        self.action_dim = len(_ACTION_SEQUENCE)  # one char per dim: "pxyzr" -> 5
         self.obs_size = obs_size
         self.state_dim = 1  # scalar gripper open/close
         self.batch_size = num_processes if num_processes > 0 else 1
