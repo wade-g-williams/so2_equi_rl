@@ -3,6 +3,8 @@ and twin-Q critic. Built on e2cnn over C_N.
 """
 
 from so2_equi_rl.networks.sac_heads import (
+    CNNActor,
+    CNNCritic,
     EquiActor,
     EquiCritic,
     SACGaussianPolicyBase,
@@ -15,4 +17,6 @@ __all__ = [
     "SACGaussianPolicyBase",
     "EquiActor",
     "EquiCritic",
+    "CNNActor",
+    "CNNCritic",
 ]

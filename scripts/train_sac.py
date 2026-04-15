@@ -14,10 +14,24 @@ from so2_equi_rl.agents.sac import SACAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.sac import SACConfig
 from so2_equi_rl.envs.wrapper import EnvWrapper
-from so2_equi_rl.networks import EquiActor, EquiCritic, EquiEncoder
+from so2_equi_rl.networks import (
+    CNNActor,
+    CNNCritic,
+    CNNEncoder,
+    EquiActor,
+    EquiCritic,
+    EquiEncoder,
+)
 from so2_equi_rl.trainers.trainer import Trainer
 from so2_equi_rl.utils import set_seed
 from so2_equi_rl.utils.logging import RunLogger
+
+# Maps the --encoder flag to the (encoder, actor, critic) triple that
+# SACAgent's DI constructor expects. One entry per baseline variant.
+_ENCODER_VARIANTS = {
+    "equi": (EquiEncoder, EquiActor, EquiCritic),
+    "cnn": (CNNEncoder, CNNActor, CNNCritic),
+}
 
 
 def _str2bool(s: str) -> bool:
@@ -111,6 +125,13 @@ def main() -> None:
         default=None,
         help="path to a checkpoint .pt to resume from",
     )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default="equi",
+        choices=sorted(_ENCODER_VARIANTS.keys()),
+        help="encoder/head variant (default: equi)",
+    )
     args = parser.parse_args()
 
     cfg = SACConfig(**_extract_dataclass_kwargs(args, SACConfig))
@@ -143,11 +164,12 @@ def main() -> None:
         seed=cfg.seed,
     )
 
+    encoder_cls, actor_cls, critic_cls = _ENCODER_VARIANTS[args.encoder]
     agent = SACAgent(
         cfg,
-        encoder_cls=EquiEncoder,
-        actor_cls=EquiActor,
-        critic_cls=EquiCritic,
+        encoder_cls=encoder_cls,
+        actor_cls=actor_cls,
+        critic_cls=critic_cls,
     )
 
     logger = RunLogger(cfg, run_name=args.run_name)

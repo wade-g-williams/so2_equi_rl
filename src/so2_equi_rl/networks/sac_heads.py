@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from e2cnn import nn as enn
 
-from so2_equi_rl.networks.encoders import EquiEncoder, irrep1_multiplicity
+from so2_equi_rl.networks.encoders import CNNEncoder, EquiEncoder, irrep1_multiplicity
 
 # Bounds we clamp log_std to before sampling.
 LOG_SIG_MIN = -20.0
@@ -214,4 +214,97 @@ class EquiCritic(torch.nn.Module):
         batch = obs.shape[0]
         q1 = self._twin_head(self.proj_1, self.mix_1, enc_out, action_gt, batch)
         q2 = self._twin_head(self.proj_2, self.mix_2, enc_out, action_gt, batch)
+        return q1, q2
+
+
+class CNNActor(SACGaussianPolicyBase):
+    """Plain-CNN SAC policy. Mirrors paper's SACGaussianPolicy: no hidden
+    MLP layers after the encoder, just two parallel Linear heads for mean
+    and log_std off the flattened encoder output. No equivariance to
+    respect, so the output is already in pxyzr order.
+
+    Takes an already-constructed `CNNEncoder` as a dependency, same DI
+    contract as `EquiActor` so `SACAgent` injects encoder_cls/actor_cls
+    without branching on variant.
+    """
+
+    def __init__(
+        self,
+        encoder: CNNEncoder,
+        action_dim: int = 5,
+    ) -> None:
+        super().__init__()
+
+        if action_dim != 5:
+            raise ValueError(
+                "CNNActor hardcodes the pxyzr action layout (action_dim=5); "
+                f"got action_dim={action_dim}"
+            )
+
+        self.encoder = encoder
+        self.action_dim = action_dim
+
+        # Parallel linear heads off the encoder's flat feature vector.
+        # Matches paper's two-linear-heads structure (no hidden MLP).
+        self.mean_linear = torch.nn.Linear(encoder.output_dim, action_dim)
+        self.log_std_linear = torch.nn.Linear(encoder.output_dim, action_dim)
+
+    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # CNNEncoder returns (B, output_dim, 1, 1); flatten the spatial.
+        encoded = self.encoder(obs)
+        flat = encoded.view(obs.shape[0], -1)
+
+        mean = self.mean_linear(flat)
+        log_std = self.log_std_linear(flat)
+        log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
+        return mean, log_std
+
+
+class CNNCritic(torch.nn.Module):
+    """Plain-CNN twin-Q critic. One shared `CNNEncoder` drives both heads,
+    matches EquiCritic's weight-sharing pattern and paper's SACCritic.
+    Each Q head is an independent MLP with a single hidden layer of width
+    128, taking (encoder_flat, action) concatenated at the input.
+    """
+
+    def __init__(
+        self,
+        encoder: CNNEncoder,
+        action_dim: int = 5,
+        hidden_dim: int = 128,
+    ) -> None:
+        super().__init__()
+
+        if action_dim != 5:
+            raise ValueError(
+                "CNNCritic hardcodes the pxyzr action layout (action_dim=5); "
+                f"got action_dim={action_dim}"
+            )
+
+        self.encoder = encoder
+        self.action_dim = action_dim
+
+        # Two independent MLPs on top of the shared encoder. Decorrelates
+        # the twin Qs without duplicating conv weights.
+        mlp_in = encoder.output_dim + action_dim
+        self.q1_mlp = torch.nn.Sequential(
+            torch.nn.Linear(mlp_in, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, 1),
+        )
+        self.q2_mlp = torch.nn.Sequential(
+            torch.nn.Linear(mlp_in, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(
+        self, obs: torch.Tensor, action: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # One shared encoder forward, action concatenated at MLP input.
+        encoded = self.encoder(obs)
+        flat = encoded.view(obs.shape[0], -1)
+        merged = torch.cat([flat, action], dim=1)
+        q1 = self.q1_mlp(merged)
+        q2 = self.q2_mlp(merged)
         return q1, q2
