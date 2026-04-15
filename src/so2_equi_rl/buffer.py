@@ -1,24 +1,18 @@
-"""Uniform replay buffer for off-policy pixel-based RL.
+"""Standard replay buffer.
 
-Public API:
-    ReplayBuffer(capacity, state_dim, obs_shape, action_dim, seed=None)
-    buf.push(states, obs, actions, rewards, next_states, next_obs, dones)
-    buf.sample(batch_size) -> Transition
-    len(buf)
+Backed by preallocated numpy arrays instead of a Python deque or torch
+tensors. Preallocation keeps memory flat over long training runs, and
+numpy indexing makes random sampling O(batch_size) with no graph-tracking
+overhead.
 
-Transition field shapes (per-sample):
-    state       (state_dim,)    float32   scalar gripper open/close
-    obs         (1, H, W)       float32   top-down heightmap
-    action      (action_dim,)   float32   (p, x, y, z, r)
-    reward      ()              float32
-    next_state  (state_dim,)    float32
-    next_obs    (1, H, W)       float32
-    done        ()              float32   float so Bellman (1-d) is cast-free
+- Fixed-size ring buffer. Once it's full, each new transition
+  overwrites the oldest one.
+- Stores (state, obs, action, reward, next_state, next_obs, done)
+- Samples a uniform random batch when the agent asks for one.
 """
 
 import collections
-from typing import Optional, Tuple
-
+from typing import Tuple
 import numpy as np
 import torch
 
@@ -28,21 +22,23 @@ Transition = collections.namedtuple(
 )
 
 
+# Convert a torch tensor to a float32 numpy array
+def _as_np(t: torch.Tensor) -> np.ndarray:
+    return t.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
 class ReplayBuffer:
-    """Uniform replay buffer with fixed capacity."""
+    """Fixed-capacity ring buffer over (state, obs, action, reward, next_state, next_obs, done)."""
 
     def __init__(
         self,
         capacity: int,
         state_dim: int,
-        obs_shape: Tuple[int, int, int],
+        obs_shape: Tuple[int, ...],
         action_dim: int,
-        seed: Optional[int] = None,
+        seed: int = 0,
     ) -> None:
         self.capacity = capacity
-
-        # Instance-local RNG so seeding the buffer doesn't touch the
-        # global numpy RNG.
         self._rng = np.random.default_rng(seed)
 
         self._states = np.zeros((capacity, state_dim), dtype=np.float32)
@@ -53,9 +49,8 @@ class ReplayBuffer:
         self._next_obs = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self._dones = np.zeros((capacity,), dtype=np.float32)
 
-        # Ring-buffer pointers.
-        self._idx = 0  # write index for next transition
-        self._size = 0  # number of transitions currently stored
+        self._idx = 0  # where the next transition gets written
+        self._size = 0  # how many transitions are currently stored
 
     def push(
         self,
@@ -72,16 +67,24 @@ class ReplayBuffer:
             raise ValueError(
                 "batch size {} exceeds buffer capacity {}".format(batch, self.capacity)
             )
+        # rewards/dones must be (B,), not (B,1) — the latter would broadcast
+        # into self._rewards[idxs] silently and corrupt the buffer.
+        assert rewards.shape == (batch,), "rewards must be shape ({},), got {}".format(
+            batch, tuple(rewards.shape)
+        )
+        assert dones.shape == (batch,), "dones must be shape ({},), got {}".format(
+            batch, tuple(dones.shape)
+        )
 
-        states_np = states.detach().cpu().numpy().astype(np.float32)
-        obs_np = obs.detach().cpu().numpy().astype(np.float32)
-        actions_np = actions.detach().cpu().numpy().astype(np.float32)
-        rewards_np = rewards.detach().cpu().numpy().astype(np.float32)
-        next_states_np = next_states.detach().cpu().numpy().astype(np.float32)
-        next_obs_np = next_obs.detach().cpu().numpy().astype(np.float32)
-        dones_np = dones.detach().cpu().numpy().astype(np.float32)
+        states_np = _as_np(states)
+        obs_np = _as_np(obs)
+        actions_np = _as_np(actions)
+        rewards_np = _as_np(rewards)
+        next_states_np = _as_np(next_states)
+        next_obs_np = _as_np(next_obs)
+        dones_np = _as_np(dones)
 
-        # Modulo wraps indices when the batch crosses the end of the array.
+        # Where each new transition lands
         idxs = (self._idx + np.arange(batch)) % self.capacity
 
         self._states[idxs] = states_np
@@ -99,12 +102,12 @@ class ReplayBuffer:
         if self._size == 0:
             raise ValueError("cannot sample from an empty ReplayBuffer")
 
-        # Uniform with replacement. If batch_size > _size during warmup,
-        # entries repeat, which is standard for off-policy replay.
+        # Uniform random sample with replacement. If batch_size > _size
+        # during warmup, entries repeat.
         idxs = self._rng.integers(0, self._size, size=batch_size)
 
-        # self._states[idxs] is fancy indexing, which copies, so the
-        # returned tensors are decoupled from buffer storage.
+        # self._states[idxs] copies the data, so the
+        # returned tensors don't share memory with the buffer.
         return Transition(
             state=torch.from_numpy(self._states[idxs]),
             obs=torch.from_numpy(self._obs[idxs]),

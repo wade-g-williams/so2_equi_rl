@@ -1,32 +1,23 @@
-"""PyBullet env adapter for the close-loop manipulation task family.
+"""Wrapper around the helping_hands_rl_envs PyBullet task library.
 
-Public API:
-    EnvWrapper(env_name, num_processes=0, seed=0, obs_size=128, ...)
-    env.reset()                 -> (states, obs)
-    env.step(actions)           -> (next_states, next_obs, rewards, dones)
-    env.get_expert_action()     -> actions from the scripted planner
-    env.close()
+The library ships two different runners (one in-process, one with worker
+subprocesses) and a pile of task-specific knobs. This wrapper is the seam
+that hides both, so the rest of the codebase only sees a single batched
+env with fixed tensor shapes.
 
-    Attributes: env_name, batch_size, action_dim, state_dim, obs_size
-
-Contract: all tensors are always batched; batch_size == max(num_processes, 1).
-Wraps helping_hands_rl_envs.env_factory.createEnvs and matches the paper's
-utils/env_wrapper.py API surface with a single-process special case.
+- Lets the agent talk to one sim or many parallel sims using the same tensor shapes.
+- Only supports the close-loop tasks, so the observation is always a top-down heightmap of the workspace.
+- Does no action decoding. The agent hands in a 5-D tensor and the wrapper passes it straight through to the library. All [-1, 1] -> physical scaling lives in the agent.
 """
 
 from typing import Optional, Tuple
-
 import numpy as np
 import torch
+from helping_hands_rl_envs import (
+    env_factory,
+)  # pinned as a git submodule at ./helping_hands_rl_envs/.
 
-# helping_hands_rl_envs is the PyBullet-based manipulation-task library
-# pinned as a git submodule at ./helping_hands_rl_envs/.
-from helping_hands_rl_envs import env_factory
-
-# The paper's training workspace: a 0.40m cube centered at (x=0.45, y=0),
-# with z ranging from the table surface to 1 m above. Shape (3, 2),
-# each row = (low, high) bounds in meters. Matches the config the paper
-# repo builds from its --workspace_size=0.4 CLI flag.
+# The paper's workspace
 _DEFAULT_WORKSPACE = np.asarray(
     [
         [0.25, 0.65],  # x: table's long axis
@@ -37,9 +28,14 @@ _DEFAULT_WORKSPACE = np.asarray(
 )
 
 
-# Close-loop manipulation tasks from helping_hands_rl_envs. Restricting the
-# wrapper to this set means obs is always a pure top-down heightmap (no
-# in-hand camera), which is what the paper's main results use.
+# Step sizes for the library's scripted expert (5 cm, 22.5 deg).
+# The RL agent has its own dpos/drot in agents/sac.py.
+_EXPERT_DPOS = 0.05
+_EXPERT_DROT = float(np.pi / 8)
+
+
+# Close-loop tasks the wrapper supports. Locking to this set keeps the
+# observation a plain top-down heightmap (no in-hand camera).
 _CLOSE_LOOP_ENVS = {
     "close_loop_block_picking",
     "close_loop_block_reaching",
@@ -53,7 +49,7 @@ _CLOSE_LOOP_ENVS = {
 
 
 class EnvWrapper:
-    """Wrapper around a helping_hands_rl_envs Runner."""
+    """Batched wrapper. Returns (B, ...) tensors; B=1 in-process, B=N workers."""
 
     def __init__(
         self,
@@ -75,36 +71,34 @@ class EnvWrapper:
             )
 
         if workspace is None:
-            # Copy so downstream mutation can't clobber the module-level default.
+            # Copy so callers can't mutate the module-level default.
             workspace = _DEFAULT_WORKSPACE.copy()
 
-        # env_config is the dict the library's createEnvs() uses.
+        # Settings the task library's createEnvs() expects.
         env_config = {
             "workspace": workspace,
             "max_steps": max_steps,  # episode length cap
             "obs_size": obs_size,  # heightmap side length (H == W)
             "action_sequence": action_sequence,  # "pxyzr" -> 5-D continuous action
             "num_objects": num_objects,  # most tasks use 1; stacking uses 2+
-            "render": render,  # True pops a GUI; False for training
-            "fast_mode": True,  # skip intermediate waypoints
+            "render": render,  # True pops a GUI window; False for training
+            "fast_mode": True,  # skip intermediate motion waypoints
             "random_orientation": False,  # objects spawn axis-aligned
-            "robot": "kuka",  # Kuka LBR iiwa
+            "robot": "kuka",  # Kuka LBR iiwa arm
             "physics_mode": "fast",  # lower-fidelity physics, much faster
             "seed": seed,
         }
 
-        # planner_config configures the library's scripted expert.
-        # dpos/drot are the per-step magnitudes it uses (5 cm position,
-        # 22.5 deg rotation).
+        # Settings for the library's scripted expert (used to generate demos).
         if planner_config is None:
             planner_config = {
                 "random_orientation": False,
-                "dpos": 0.05,
-                "drot": float(np.pi / 8),
+                "dpos": _EXPERT_DPOS,
+                "drot": _EXPERT_DROT,
             }
 
-        # createEnvs returns a SingleRunner (num_processes=0) or a
-        # MultiRunner (num_processes>0) that spawns that many worker subprocesses.
+        # createEnvs gives us a SingleRunner when num_processes=0, or a
+        # MultiRunner that spawns num_processes worker subprocesses otherwise.
         self._runner = env_factory.createEnvs(
             num_processes, "pybullet", env_name, env_config, planner_config
         )
@@ -119,7 +113,8 @@ class EnvWrapper:
         self._is_single = num_processes == 0
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Discard hand_obs. Unused for close-loop tasks.
+        # The library also returns an in-hand camera obs, which close-loop
+        # tasks don't use. Throw it away.
         states, _in_hand, obs = self._runner.reset()
         return self._to_batched_obs(states, obs)
 
@@ -138,9 +133,9 @@ class EnvWrapper:
                 )
             )
 
-        actions_np = actions.detach().cpu().numpy().astype(np.float32)
+        actions_np = actions.detach().cpu().numpy().astype(np.float32, copy=False)
 
-        # SingleRunner.step wants (5,); MultiRunner wants (N, 5).
+        # SingleRunner wants a flat (5,) action; MultiRunner wants (N, 5).
         if self._is_single:
             actions_np = actions_np[0]
 
@@ -148,7 +143,8 @@ class EnvWrapper:
 
         states_t, obs_t = self._to_batched_obs(states, obs)
 
-        # Single gives Python scalars, multi gives (N,) arrays.
+        # SingleRunner returns Python scalars for reward/done; MultiRunner
+        # returns (N,) arrays. Force everything to (B,) arrays.
         if self._is_single:
             rewards_np = np.asarray([rewards], dtype=np.float32)
             dones_np = np.asarray([float(dones)], dtype=np.float32)
@@ -164,8 +160,8 @@ class EnvWrapper:
         )
 
     def get_expert_action(self) -> torch.Tensor:
-        # Library's scripted planner. Used to bootstrap the replay
-        # buffer with demo episodes before SAC training starts.
+        # Asks the library's scripted planner what it would do next.
+        # Used to fill the replay buffer with demos before SAC training.
         actions = self._runner.getNextAction()
         actions = np.asarray(actions, dtype=np.float32)
         if self._is_single:
@@ -178,8 +174,8 @@ class EnvWrapper:
     def _to_batched_obs(
         self, states: np.ndarray, obs: np.ndarray
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Reshape directly to the contract shape; handles both runners'
-        # inner shapes (Single: (1,)/(1,H,W); Multi: (N,1)/(N,1,H,W)).
+        # Force both runners' output shapes into the same (B, ...) layout.
+        # Single gives (1,)/(1,H,W); Multi gives (N,1)/(N,1,H,W).
         states = np.asarray(states, dtype=np.float32).reshape(
             self.batch_size, self.state_dim
         )

@@ -27,6 +27,7 @@ runs/
 
 # Testing
 .pytest_cache/
+/tests
 
 # Env
 

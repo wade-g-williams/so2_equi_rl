@@ -5,13 +5,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "so2_equi_rl"
 version = "0.1.0"
-description = "SO(2)-equivariant reinforcement learning for robotics"
+description = "From-scratch reimplementation of Wang et al. (ICLR 2022) SO(2)-equivariant SAC for close-loop BulletArm manipulation. CS 5180 final project."
 readme = "README.md"
 requires-python = ">=3.7,<3.8"
 license = { text = "MIT" }
 authors = [
     { name = "Wade Williams", email = "wadewilliams6@icloud.com" },
 ]
+keywords = [
+    "reinforcement-learning",
+    "equivariance",
+    "robotics",
+    "manipulation",
+    "sac",
+    "paper-reimplementation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Don't let pytest walk into the pinned submodule and try to collect its tests.
+norecursedirs = ["helping_hands_rl_envs", ".git", ".venv", "build", "dist"]

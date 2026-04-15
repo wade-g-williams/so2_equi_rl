@@ -1,35 +1,26 @@
-"""C_N-equivariant image encoder.
-
-Matches Wang et al. (2022) EquivariantEncoder128. Seven-block e2cnn stack,
-regular-representation features throughout, 128x128 input -> 1x1 output.
-
-Paper notation -> code:
-    N       -> group_order    (default 8, matches paper main results)
-    n_out   -> n_hidden       (default 128)
-
-Public API:
-    tile_state(obs, state) -> (B, obs_channels, H, W)    # state_dim=1 only
-    EquiEncoder(obs_channels=2, n_hidden=128, group_order=8)
-    encoder(tiled_obs) -> GeometricTensor of shape (B, n_hidden * N, 1, 1)
-    encoder.output_type   # e2cnn FieldType, for chaining into actor/critic
-    encoder.output_dim    # int, for sizing downstream heads
+"""Rotation-equivariant image encoder matching Wang et al. (2022). C_N group
+via e2cnn R2Conv layers; default C_8 matches the paper.
 """
 
 import torch
-
-from e2cnn import gspaces
-from e2cnn import nn as enn
+from e2cnn import gspaces, nn as enn
 
 
 def tile_state(obs: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
-    # Broadcast the scalar gripper flag to a full channel plane so it
-    # rides the conv stack alongside the heightmap.
+    # Broadcast the scalar gripper flag to a full (H, W) plane and stack
+    # it onto the heightmap: (B,1,H,W) + (B,1) -> (B,2,H,W).
     batch, _, height, width = obs.shape
     state_plane = state.view(batch, 1, 1, 1).expand(batch, 1, height, width)
     return torch.cat([obs, state_plane], dim=1)
 
 
 class EquiEncoder(torch.nn.Module):
+    """C_N-equivariant conv encoder. 7 R2Conv blocks, regular_repr hidden,
+    maps (B, obs_channels, 128, 128) -> GeometricTensor with n_hidden*N channels
+    at 1x1 spatial. Rotating the input by 360/N deg cyclically permutes the
+    feature map.
+    """
+
     def __init__(
         self,
         obs_channels: int = 2,
@@ -38,25 +29,19 @@ class EquiEncoder(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        # Spatial progression (channel mults are per-field; each field has
-        # N values from the regular representation):
-        #
-        #             conv         spatial    mult
-        #   input                  128x128    obs_channels (trivial repr)
-        #   block 1   3x3 + pool   64x64      n_hidden // 8
-        #   block 2   3x3 + pool   32x32      n_hidden // 4
-        #   block 3   3x3 + pool   16x16      n_hidden // 2
-        #   block 4   3x3 + pool    8x8       n_hidden
-        #   block 5   3x3           8x8       n_hidden * 2    <- bottleneck
-        #   block 6   3x3 valid + pool  3x3   n_hidden        <- valid: 8->6
-        #   block 7   3x3 valid     1x1       n_hidden
-        #   output                 (B, n_hidden * N, 1, 1)
+        # Block 1 uses n_hidden // 8 channels, so n_hidden has to be
+        # divisible by 8 or the first block silently truncates.
+        if n_hidden % 8 != 0:
+            raise ValueError(
+                "n_hidden must be divisible by 8 (block 1 uses n_hidden // 8 channels); "
+                "got n_hidden={}".format(n_hidden)
+            )
 
-        self._gspace = gspaces.Rot2dOnR2(N=group_order)
+        self.gspace = gspaces.Rot2dOnR2(N=group_order)
 
-        # Both input channels are scalar, so they use trivial reprs.
+        # Both input channels are scalars that don't change under rotation
         self.input_type = enn.FieldType(
-            self._gspace, [self._gspace.trivial_repr] * obs_channels
+            self.gspace, [self.gspace.trivial_repr] * obs_channels
         )
 
         mults = (
@@ -69,7 +54,7 @@ class EquiEncoder(torch.nn.Module):
             n_hidden,
         )
         regular_types = [
-            enn.FieldType(self._gspace, m * [self._gspace.regular_repr]) for m in mults
+            enn.FieldType(self.gspace, m * [self.gspace.regular_repr]) for m in mults
         ]
 
         self.conv = enn.SequentialModule(
@@ -101,7 +86,7 @@ class EquiEncoder(torch.nn.Module):
             enn.ReLU(regular_types[6], inplace=True),
         )
 
-        self.output_type = regular_types[6]
+        self.output_type = regular_types[-1]
         self.output_dim = n_hidden * group_order
 
     def forward(self, obs: torch.Tensor) -> enn.GeometricTensor:
