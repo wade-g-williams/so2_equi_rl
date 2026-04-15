@@ -95,6 +95,10 @@ class EquiEncoder(torch.nn.Module):
         )
 
         self.output_type = regular_types[-1]
+        # Flat channel count after the final 1x1 spatial collapse: last
+        # multiplicity * group_order. Exposed so downstream heads / tests
+        # can size flatten layers without reaching into FieldType internals.
+        self.output_dim = mults[-1] * group_order
 
     def forward(self, obs: torch.Tensor) -> enn.GeometricTensor:
         # The conv stack is hand-tuned for 128x128 input; other sizes
@@ -125,6 +129,9 @@ class CNNEncoder(torch.nn.Module):
         self.obs_channels = obs_channels
         self.n_hidden = n_hidden
         self.group_order = group_order
+        # Matches EquiEncoder's n_hidden * group_order so shared heads
+        # can size themselves off self.encoder.output_dim either way.
+        self.output_dim = n_hidden * group_order
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
