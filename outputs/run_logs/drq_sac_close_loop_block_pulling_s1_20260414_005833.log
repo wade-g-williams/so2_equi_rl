@@ -1,0 +1,6 @@
+pybullet build time: Mar 24 2020 20:06:54
+Creating environments: close_loop_block_pulling
+Creating agent (model=drq)...
+Output dir: outputs/drq_sac_block_pulling_s1_20260414_005837
+Collected 20 demo episodes (20 successes, buffer size: 800)
+Training finished. Output: outputs/drq_sac_block_pulling_s1_20260414_005837

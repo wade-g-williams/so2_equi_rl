@@ -1,0 +1,6 @@
+pybullet build time: Mar 24 2020 20:06:54
+Creating environments: close_loop_block_picking
+Creating agent (model=cnn)...
+Output dir: outputs/cnn_sac_block_picking_s0_20260413_212135
+Collected 20 demo episodes (20 successes, buffer size: 600)
+Training finished. Output: outputs/cnn_sac_block_picking_s0_20260413_212135

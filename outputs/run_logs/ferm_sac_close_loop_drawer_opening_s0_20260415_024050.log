@@ -1,0 +1,6 @@
+pybullet build time: Mar 24 2020 20:06:54
+Creating environments: close_loop_drawer_opening
+Creating agent (model=ferm)...
+Output dir: outputs/ferm_sac_drawer_opening_s0_20260415_024058
+Collected 20 demo episodes (20 successes, buffer size: 1050)
+Training finished. Output: outputs/ferm_sac_drawer_opening_s0_20260415_024058
