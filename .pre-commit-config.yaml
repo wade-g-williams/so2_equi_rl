@@ -1,5 +1,9 @@
-# Default pre-commit config — copy to any repo as .pre-commit-config.yaml
-# then run: pre-commit install
+# Pre-commit config for so2_equi_rl.
+# Hooks run against source code we wrote. Training outputs, reference
+# papers, and the vendored AAAI template are excluded so the fixers
+# don't rewrite machine-generated data or upstream files.
+
+exclude: '^(outputs/|reference/|report/aaai2026\.(bst|sty)$)'
 
 repos:
   # Basic file hygiene
