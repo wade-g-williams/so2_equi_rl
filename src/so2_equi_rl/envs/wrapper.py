@@ -9,12 +9,23 @@ wrapper passes it straight through. All [-1, 1] -> physical scaling
 belongs in the agent.
 """
 
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
+
 import numpy as np
 import torch
-from helping_hands_rl_envs import (
-    env_factory,
-)  # pinned as a git submodule at ./helping_hands_rl_envs/.
+from helping_hands_rl_envs import env_factory
+
+
+class EnvStep(NamedTuple):
+    """Return shape for EnvWrapper.step. Positional order matches the
+    4-tuple unpacking trainers expect: state, obs, reward, done.
+    """
+
+    state: torch.Tensor
+    obs: torch.Tensor
+    reward: torch.Tensor
+    done: torch.Tensor
+
 
 # The paper's workspace
 _DEFAULT_WORKSPACE = np.asarray(
@@ -32,8 +43,7 @@ _DEFAULT_WORKSPACE = np.asarray(
 _EXPERT_DPOS = 0.05
 _EXPERT_DROT = float(np.pi / 8)
 
-# Locked env_config knobs. Lifted out of __init__ so they're greppable
-# from the top of the file when curves need debugging.
+# Locked env_config knobs.
 _ACTION_SEQUENCE = "pxyzr"  # 5-D continuous action: (p, dx, dy, dz, dtheta)
 _FAST_MODE = True  # skip intermediate motion waypoints
 _RANDOM_ORIENTATION = False  # objects spawn axis-aligned
@@ -72,8 +82,8 @@ class EnvWrapper:
     ) -> None:
         if env_name not in _CLOSE_LOOP_ENVS:
             raise ValueError(
-                "env_name={!r} is not a supported close-loop task. "
-                "Valid options: {}".format(env_name, sorted(_CLOSE_LOOP_ENVS))
+                f"env_name={env_name!r} is not a supported close-loop task. "
+                f"Valid options: {sorted(_CLOSE_LOOP_ENVS)}"
             )
 
         if workspace is None:
@@ -124,22 +134,20 @@ class EnvWrapper:
         states, _in_hand, obs = self._runner.reset()
         return self._to_batched_obs(states, obs)
 
-    def step(
-        self, actions: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def step(self, actions: torch.Tensor) -> EnvStep:
         if not torch.is_tensor(actions):
             raise TypeError(
-                "actions must be a torch tensor, got {}".format(type(actions).__name__)
+                f"actions must be a torch tensor, got {type(actions).__name__}"
             )
         expected_shape = (self.batch_size, self.action_dim)
         if tuple(actions.shape) != expected_shape:
             raise ValueError(
-                "expected action shape {}, got {}".format(
-                    expected_shape, tuple(actions.shape)
-                )
+                f"expected action shape {expected_shape}, got {tuple(actions.shape)}"
             )
 
-        actions_np = actions.detach().cpu().numpy().astype(np.float32, copy=False)
+        actions_np = actions.detach().cpu().numpy()
+        if actions_np.dtype != np.float32:
+            actions_np = actions_np.astype(np.float32)
 
         # SingleRunner wants a flat (5,) action; MultiRunner wants (N, 5).
         if self._is_single:
@@ -158,11 +166,11 @@ class EnvWrapper:
             rewards_np = np.asarray(rewards, dtype=np.float32)
             dones_np = np.asarray(dones, dtype=np.float32)
 
-        return (
-            states_t,
-            obs_t,
-            torch.from_numpy(rewards_np),
-            torch.from_numpy(dones_np),
+        return EnvStep(
+            state=states_t,
+            obs=obs_t,
+            reward=torch.from_numpy(rewards_np),
+            done=torch.from_numpy(dones_np),
         )
 
     def get_expert_action(self) -> torch.Tensor:

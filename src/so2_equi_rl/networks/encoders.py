@@ -5,21 +5,15 @@ via e2cnn R2Conv layers; default C_8 matches the paper.
 import torch
 from e2cnn import gspaces, nn as enn
 
+# The encoder's block stack reduces spatial 128 -> 1 exactly. Other
+# sizes would produce >1x1 output and silently break the downstream
+# .view(B, -1) flatten in actor/critic heads.
+EXPECTED_OBS_SIZE = 128
+
 
 def irrep1_multiplicity(group_order: int) -> int:
-    # How many copies of irrep(1) we need to cover a 2D vector (dx, dy)
-    # under C_N. For N >= 3, irrep(1) is the 2D rotation rep, so one copy
-    # suffices. For N = 2, irrep(1) is the 1D sign rep; we need two copies
-    # since both components of (dx, dy) flip under a 180 deg rotation.
+    # irrep(1) is 2D for N >= 3 (one copy covers (dx, dy)); for N = 2 it's the 1D sign rep, so need two.
     return 2 if group_order == 2 else 1
-
-
-def tile_state(obs: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
-    # Broadcast the scalar gripper flag to a full (H, W) plane and stack
-    # it onto the heightmap: (B,1,H,W) + (B,1) -> (B,2,H,W).
-    batch, _, height, width = obs.shape
-    state_plane = state.view(batch, 1, 1, 1).expand(batch, 1, height, width)
-    return torch.cat([obs, state_plane], dim=1)
 
 
 class EquiEncoder(torch.nn.Module):
@@ -42,8 +36,14 @@ class EquiEncoder(torch.nn.Module):
         if n_hidden % 8 != 0:
             raise ValueError(
                 "n_hidden must be divisible by 8 (block 1 uses n_hidden // 8 channels); "
-                "got n_hidden={}".format(n_hidden)
+                f"got n_hidden={n_hidden}"
             )
+
+        # Stored so downstream heads can read them without re-receiving
+        # the same kwargs on the caller side.
+        self.obs_channels = obs_channels
+        self.n_hidden = n_hidden
+        self.group_order = group_order
 
         self.gspace = gspaces.Rot2dOnR2(N=group_order)
 
@@ -95,8 +95,36 @@ class EquiEncoder(torch.nn.Module):
         )
 
         self.output_type = regular_types[-1]
-        self.output_dim = n_hidden * group_order
 
     def forward(self, obs: torch.Tensor) -> enn.GeometricTensor:
+        # The conv stack is hand-tuned for 128x128 input; other sizes
+        # produce non-1x1 output and break downstream flatten logic.
+        if obs.shape[-2:] != (EXPECTED_OBS_SIZE, EXPECTED_OBS_SIZE):
+            raise ValueError(
+                f"EquiEncoder expects (B, C, {EXPECTED_OBS_SIZE}, {EXPECTED_OBS_SIZE}) "
+                f"input; got spatial {tuple(obs.shape[-2:])}"
+            )
         x = enn.GeometricTensor(obs, self.input_type)
         return self.conv(x)
+
+
+class CNNEncoder(torch.nn.Module):
+    """Plain-CNN image encoder baseline. Stub surface so heads can inject
+    it and the create_agent factory can resolve it; body lands later.
+    """
+
+    def __init__(
+        self,
+        obs_channels: int = 2,
+        n_hidden: int = 128,
+        group_order: int = 1,
+    ) -> None:
+        super().__init__()
+        # Mirrors EquiEncoder's surface so heads can read the same attrs
+        # without branching on encoder type.
+        self.obs_channels = obs_channels
+        self.n_hidden = n_hidden
+        self.group_order = group_order
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
