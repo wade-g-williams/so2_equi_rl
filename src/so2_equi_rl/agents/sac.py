@@ -1,4 +1,4 @@
-"""Twin-Q SAC with entropy tuning and a [-1, 1] -> physical action decoder.
+"""Twin-Q SAC with entropy tuning and a physical-unit action decoder.
 
 Network choice is injected via actor_cls / critic_cls so one update() body
 drives the equivariant runs and the CNN baseline.
@@ -10,7 +10,7 @@ rotating a physical-unit action is not a group action.
 
 import copy
 import math
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Type
 
 import torch
 import torch.nn as nn
@@ -23,14 +23,6 @@ from so2_equi_rl.configs.sac import SACConfig
 from so2_equi_rl.utils import tile_state
 
 
-def _resolve_device(device: Optional[str]) -> torch.device:
-    # None -> auto: cuda if available, else cpu. Avoids a hard crash on
-    # CPU-only boxes from a default-constructed agent.
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    return torch.device(device)
-
-
 class SACAgent(Agent):
     """Twin-Q SAC with entropy tuning and a physical-unit action decoder."""
 
@@ -41,7 +33,10 @@ class SACAgent(Agent):
         actor_cls: Type[nn.Module],
         critic_cls: Type[nn.Module],
     ) -> None:
-        self.device = _resolve_device(cfg.device)
+        # Auto-pick cuda when available so a default-constructed agent
+        # doesn't hard-crash on CPU-only machines.
+        device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
         self.action_dim = cfg.action_dim
         self.gamma = cfg.gamma
         self.tau = cfg.tau
@@ -101,7 +96,8 @@ class SACAgent(Agent):
         return self.log_alpha.exp()
 
     def decode_action(self, unscaled: Tensor) -> Tensor:
-        # [-1, 1] -> physical. p is an asymmetric affine onto the gripper range; deltas are symmetric scales.
+        # Decode from [-1, 1] to physical units. p is an asymmetric affine onto
+        # the gripper range; deltas are symmetric scales.
         p = self.p_low + 0.5 * (unscaled[:, 0:1] + 1.0) * self.p_span
         dxyz = unscaled[:, 1:4] * self.dpos
         dtheta = unscaled[:, 4:5] * self.drot
@@ -133,25 +129,12 @@ class SACAgent(Agent):
             else:
                 unscaled, _, _ = self.actor.sample(tiled)
             physical = self.decode_action(unscaled)
-        # Return on CPU so the caller (env.step, replay buffer) doesn't
-        # pay a GPU -> CPU sync per env step downstream.
+        # Return on CPU so the caller (env.step, replay buffer) doesn't pay
+        # a device-sync per env step downstream.
         return ActionPair(unscaled=unscaled.cpu(), physical=physical.cpu())
 
-    def _maybe_clip_grads(self, params) -> None:
-        # No-op unless grad_clip_norm was set at construction.
-        if self.grad_clip_norm is not None:
-            nn.utils.clip_grad_norm_(params, self.grad_clip_norm)
-
-    def _soft_update_target(self) -> None:
-        # Polyak average: target <- (1 - tau) * target + tau * online.
-        with torch.no_grad():
-            for p, p_target in zip(
-                self.critic.parameters(), self.critic_target.parameters()
-            ):
-                p_target.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
-
     def update(self, batch: Transition) -> Dict[str, float]:
-        # One SAC update step: critic -> actor -> alpha -> target.
+        # One SAC update step in order: critic, actor, alpha, target.
         # batch is a Transition of CPU tensors from ReplayBuffer.sample().
         # Returns a dict of scalar floats for logging.
         batch = batch.to(self.device, non_blocking=True)
@@ -183,7 +166,8 @@ class SACAgent(Agent):
 
         self.critic_optim.zero_grad()
         critic_loss.backward()
-        self._maybe_clip_grads(self.critic.parameters())
+        if self.grad_clip_norm is not None:
+            nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optim.step()
 
         # Actor step. Re-sample from the actor with gradients enabled;
@@ -195,7 +179,8 @@ class SACAgent(Agent):
 
         self.actor_optim.zero_grad()
         actor_loss.backward()
-        self._maybe_clip_grads(self.actor.parameters())
+        if self.grad_clip_norm is not None:
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip_norm)
         self.actor_optim.step()
 
         # Temperature step. Detached log-prob so this gradient only touches
@@ -209,7 +194,12 @@ class SACAgent(Agent):
         # No grad clip on log_alpha: vacuous on a 1-D tensor.
         self.alpha_optim.step()
 
-        self._soft_update_target()
+        # Polyak average on the target critic: target <- (1 - tau)*target + tau*online.
+        with torch.no_grad():
+            for p, p_target in zip(
+                self.critic.parameters(), self.critic_target.parameters()
+            ):
+                p_target.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
 
         return {
             "critic_loss": critic_loss.item(),

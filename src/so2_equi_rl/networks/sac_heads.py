@@ -161,7 +161,7 @@ class EquiCritic(torch.nn.Module):
         # One trivial scalar out per Q-head (invariant Q-value).
         self.q_out_type = enn.FieldType(gspace, [gspace.trivial_repr])
 
-        # Two independent projection layers (encoder -> action-shape).
+        # Two independent projection layers from encoder output to action shape.
         self.proj_1 = enn.R2Conv(
             encoder.output_type, self.action_type, kernel_size=1, padding=0
         )
@@ -169,7 +169,7 @@ class EquiCritic(torch.nn.Module):
             encoder.output_type, self.action_type, kernel_size=1, padding=0
         )
 
-        # Two independent mixers (merged -> single trivial scalar).
+        # Two independent mixers from the merged feature to a single trivial scalar.
         self.mix_1 = enn.R2Conv(
             self.merged_type, self.q_out_type, kernel_size=1, padding=0
         )
@@ -178,7 +178,7 @@ class EquiCritic(torch.nn.Module):
         )
 
     def _wrap_action(self, action: torch.Tensor) -> enn.GeometricTensor:
-        # Reshuffle pxyzr -> (dx, dy, p, dz, dtheta) so the irrep(1)
+        # Reorder from pxyzr into (dx, dy, p, dz, dtheta) so the irrep(1)
         # components sit at the front of the channel axis where the
         # action_type expects them.
         p = action[:, 0:1]

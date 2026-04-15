@@ -34,7 +34,7 @@ class SACConfig(TrainConfig):
     alpha_lr: float = 1e-3
     init_alpha: float = 0.1
 
-    # None -> target_entropy defaults to -action_dim inside SACAgent.
+    # When None, target_entropy defaults to -action_dim inside SACAgent.
     target_entropy: Optional[float] = None
 
     # Global-norm clip applied per optimizer. None = disabled (matches paper repo).
