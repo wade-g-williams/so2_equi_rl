@@ -1,7 +1,6 @@
-"""Fixed-capacity ring replay buffer on preallocated CPU tensors.
-Once full, each new transition overwrites the oldest. Stores
-(state, obs, action, reward, next_state, next_obs, done) and
-uniform-samples batches.
+"""Fixed-capacity replay buffer on preallocated CPU tensors. Once full,
+each new transition overwrites the oldest. Stores (state, obs, action,
+reward, next_state, next_obs, done) and uniform-samples batches.
 """
 
 from typing import NamedTuple, Tuple
@@ -38,7 +37,8 @@ _ACTION_BOUND_TOL = 1e-5
 
 
 def _as_cpu_f32(t: torch.Tensor) -> torch.Tensor:
-    # Detach graph, coerce to CPU float32. No-op copy if already matching.
+    # Detach from graph, then coerce to CPU float32. .to() is a no-op when
+    # device and dtype already match; .detach() always returns a new view.
     return t.detach().to(dtype=torch.float32, device="cpu")
 
 
@@ -58,7 +58,7 @@ class ReplayBuffer:
         self.capacity = capacity
 
         # CPU float32 storage. Fancy-index sampling copies into a new
-        # tensor so returned batches never alias the ring.
+        # tensor so returned batches never alias the replay storage.
         self._state = torch.zeros((capacity, state_dim), dtype=torch.float32)
         self._obs = torch.zeros((capacity, *obs_shape), dtype=torch.float32)
         self._action = torch.zeros((capacity, action_dim), dtype=torch.float32)
@@ -130,7 +130,7 @@ class ReplayBuffer:
                 f"max|a|={max_abs:.4f}. Did you forget to encode_action() before push?"
             )
 
-        # Ring write indices.
+        # Wrap-around write indices into the replay storage.
         idxs = (torch.arange(batch) + self._idx) % self.capacity
 
         self._state[idxs] = state_c
@@ -165,3 +165,53 @@ class ReplayBuffer:
 
     def __len__(self) -> int:
         return self._size
+
+    def state_dict(self) -> dict:
+        # Snapshot for checkpointing. Tensors are cloned so later push() calls
+        # can't mutate the saved copy before torch.save hits disk.
+        return {
+            "state": self._state.clone(),
+            "obs": self._obs.clone(),
+            "action": self._action.clone(),
+            "reward": self._reward.clone(),
+            "next_state": self._next_state.clone(),
+            "next_obs": self._next_obs.clone(),
+            "done": self._done.clone(),
+            "idx": self._idx,
+            "size": self._size,
+            "gen_state": self._gen.get_state(),  # torch.ByteTensor; restore via set_state
+            "schema": {
+                "capacity": self.capacity,
+                "state_dim": self._state_dim,
+                "obs_shape": self._obs_shape,
+                "action_dim": self._action_dim,
+            },
+        }
+
+    def load_state_dict(self, d: dict) -> None:
+        # Hard schema check: resuming into a differently-shaped buffer is
+        # almost always a CLI mistake, not an intentional resize.
+        schema = d["schema"]
+        expected = {
+            "capacity": self.capacity,
+            "state_dim": self._state_dim,
+            "obs_shape": self._obs_shape,
+            "action_dim": self._action_dim,
+        }
+        if schema != expected:
+            raise ValueError(
+                f"ReplayBuffer schema mismatch on load: expected {expected}, got {schema}"
+            )
+
+        # copy_ into preallocated storage so the replay tensors stay in place.
+        self._state.copy_(d["state"])
+        self._obs.copy_(d["obs"])
+        self._action.copy_(d["action"])
+        self._reward.copy_(d["reward"])
+        self._next_state.copy_(d["next_state"])
+        self._next_obs.copy_(d["next_obs"])
+        self._done.copy_(d["done"])
+
+        self._idx = int(d["idx"])
+        self._size = int(d["size"])
+        self._gen.set_state(d["gen_state"])

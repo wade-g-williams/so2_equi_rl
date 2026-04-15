@@ -39,3 +39,6 @@ class SACConfig(TrainConfig):
 
     # Global-norm clip applied per optimizer. None = disabled (matches paper repo).
     grad_clip_norm: Optional[float] = None
+
+    # UTD ratio: gradient updates per env.step batch. 1 = standard SAC.
+    n_updates_per_step: int = 1

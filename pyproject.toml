@@ -33,3 +33,6 @@ where = ["src"]
 testpaths = ["tests"]
 # Don't let pytest walk into the pinned submodule and try to collect its tests.
 norecursedirs = ["helping_hands_rl_envs", ".git", ".venv", "build", "dist"]
+markers = [
+    "slow: spins up BulletArm + real SACAgent; opt in via '-m slow' or ::name",
+]

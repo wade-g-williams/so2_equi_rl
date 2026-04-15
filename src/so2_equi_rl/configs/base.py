@@ -1,10 +1,10 @@
-"""Trainer-loop knobs shared by every agent variant -- env name, seed,
-step budget, log cadence, device, output dir. Agent-specific hyperparameters
+"""Trainer-loop knobs shared by every agent variant: env name, seed, step
+budget, log cadence, device, output dir. Agent-specific hyperparameters
 live on subclasses so the trainer stays update-rule-agnostic.
 
-Every field defaults. Dataclass inheritance puts base fields before
-subclass fields, and a non-default after a default is a TypeError --
-defaults-only keeps subclassing safe.
+Every field defaults. Dataclass inheritance puts base fields before subclass
+fields, and a non-default after a default is a TypeError, so keeping
+everything defaulted makes subclassing safe.
 """
 
 from dataclasses import dataclass
@@ -31,6 +31,16 @@ class TrainConfig:
     log_every: int = 100
     eval_every: int = 5_000
     ckpt_every: int = 10_000
+
+    # Eval knobs. eval_seed is used to build a separate EnvWrapper so eval
+    # rollouts don't perturb the training env's RNG.
+    eval_episodes: int = 5
+    eval_seed: int = 10_000
+
+    # Persist the replay buffer inside last.pt. Flip off for real runs where
+    # the full buffer (~13 GB at default capacity: 100k x 1x128x128 float32 for
+    # obs + next_obs) is too big to dump every ckpt_every.
+    save_buffer_on_ckpt: bool = True
 
     # Output directory root. RunLogger creates a timestamped subdir per run.
     output_dir: str = "outputs"

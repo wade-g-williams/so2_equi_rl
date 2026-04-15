@@ -43,7 +43,7 @@ class Agent(ABC):
 
     @abstractmethod
     def state_dict(self) -> Dict[str, Any]:
-        """Full trainable state for checkpointing -- nets, optimizers, and
+        """Full trainable state for checkpointing: nets, optimizers, and
         any tuned temperatures. Lives on the agent so optimizer state
         travels with the weights.
         """

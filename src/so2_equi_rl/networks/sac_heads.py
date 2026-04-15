@@ -5,8 +5,8 @@ SACGaussianPolicyBase. EquiCritic is the C_N-invariant twin-Q critic.
 
 Action-split contract on the equivariant variants:
 - (dx, dy) transform as irrep(1) under the C_N group action on the
-  heightmap -- they rotate with the obs.
-- (p, dz, dtheta) transform trivially -- they pass through invariant.
+  heightmap, so they rotate with the obs.
+- (p, dz, dtheta) transform trivially and pass through invariant.
 - Critics are C_N-invariant under the joint (obs, action) group action.
 """
 

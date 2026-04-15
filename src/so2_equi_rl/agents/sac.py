@@ -4,13 +4,13 @@ Network choice is injected via actor_cls / critic_cls so one update() body
 drives the equivariant runs and the CNN baseline.
 
 Buffer stores unscaled [-1, 1] actions; decode_action runs only at the
-env.step boundary. irrep(1) geometry is defined on the unscaled space --
+env.step boundary. irrep(1) geometry is defined on the unscaled space;
 rotating a physical-unit action is not a group action.
 """
 
 import copy
 import math
-from typing import Optional, Type
+from typing import Any, Dict, Optional, Type
 
 import torch
 import torch.nn as nn
@@ -150,7 +150,7 @@ class SACAgent(Agent):
             ):
                 p_target.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
 
-    def update(self, batch: Transition) -> dict:
+    def update(self, batch: Transition) -> Dict[str, float]:
         # One SAC update step: critic -> actor -> alpha -> target.
         # batch is a Transition of CPU tensors from ReplayBuffer.sample().
         # Returns a dict of scalar floats for logging.
@@ -220,7 +220,7 @@ class SACAgent(Agent):
             "q2_mean": q2.mean().item(),
         }
 
-    def state_dict(self) -> dict:
+    def state_dict(self) -> Dict[str, Any]:
         # Serialize all trainable state for checkpointing: online critic,
         # target critic, actor, log_alpha, and all three optimizer states.
         return {
@@ -233,7 +233,7 @@ class SACAgent(Agent):
             "alpha_optim": self.alpha_optim.state_dict(),
         }
 
-    def load_state_dict(self, d: dict) -> None:
+    def load_state_dict(self, d: Dict[str, Any]) -> None:
         self.actor.load_state_dict(d["actor"])
         self.critic.load_state_dict(d["critic"])
         self.critic_target.load_state_dict(d["critic_target"])

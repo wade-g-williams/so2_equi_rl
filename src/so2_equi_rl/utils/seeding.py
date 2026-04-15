@@ -1,6 +1,6 @@
 """Global seeding: torch (CPU + CUDA), numpy, Python random. Called once
 at the top of the trainer's run() so every run with the same seed replays
-the same trajectory. EnvWrapper is NOT seeded here -- its underlying
+the same trajectory. EnvWrapper is NOT seeded here; its underlying
 PyBullet runner is seeded at construction via env_config["seed"], so the
 trainer just needs to pass the same seed into EnvWrapper(...).
 """

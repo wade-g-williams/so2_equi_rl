@@ -24,70 +24,33 @@ uv pip install -e helping_hands_rl_envs
 
 ```text
 so2_equi_rl/
-├── environment.yml
-├── pyproject.toml
-├── .pre-commit-config.yaml
-├── helping_hands_rl_envs/        (submodule)
-└── src/so2_equi_rl/
-    ├── agents/
-    ├── buffers/
-    ├── configs/
-    ├── envs/
-    ├── networks/
-    ├── trainers/
-    └── utils/
+|-- environment.yml                 conda env pinned to the versions the paper used
+|-- pyproject.toml                  package metadata and deps
+|-- .pre-commit-config.yaml         format + lint on commit
+|-- helping_hands_rl_envs/          BulletArm sim, pulled in as a submodule
+|-- scripts/
+|   `-- train_sac.py                CLI entry point, builds everything and hands it to Trainer
+`-- src/so2_equi_rl/
+    |-- agents/
+    |   |-- base.py                 agent interface (act, update, save/load)
+    |   `-- sac.py                  SAC: actor + critic updates, entropy tuning
+    |-- buffers/
+    |   `-- replay.py               fixed-capacity replay buffer, uniform-sampled batches
+    |-- configs/
+    |   |-- base.py                 shared training settings (env, seed, steps, device, out dir)
+    |   `-- sac.py                  SAC hyperparameters (lrs, gamma, tau, batch size, ...)
+    |-- envs/
+    |   `-- wrapper.py              wraps BulletArm to return batched torch tensors
+    |-- networks/
+    |   |-- encoders.py             equivariant CNN that turns the heightmap into features
+    |   `-- sac_heads.py            equivariant actor + critic heads
+    |-- trainers/
+    |   `-- trainer.py              agent-agnostic rollout + update + eval + checkpoint loop
+    `-- utils/
+        |-- logging.py              metrics, configs, checkpoints to disk
+        |-- preprocessing.py        folds gripper state into the image tensor
+        `-- seeding.py              seeds every RNG for reproducibility
 ```
-
-### Root
-
-- `environment.yml`: conda env with the package versions the paper used
-- `pyproject.toml`: Python package info and dependencies
-- `.pre-commit-config.yaml`: auto-formatting and linting on every commit
-- `helping_hands_rl_envs/`: the paper's BulletArm simulator, pulled in as a submodule
-
-### `agents/`
-
-The learner.
-
-- `base.py`: the interface every agent has to implement (pick an action, learn from a batch, save/load)
-- `sac.py`: the SAC algorithm itself. Picks actions, trains the actor and critic, handles entropy tuning
-
-### `buffers/`
-
-Experience replay.
-
-- `replay.py`: stores recent transitions and samples random batches for training
-
-### `configs/`
-
-All the knobs in one place.
-
-- `base.py`: shared training settings (env, seed, steps, device, output dir)
-- `sac.py`: SAC-specific hyperparameters (learning rates, γ, τ, batch size, etc.)
-
-### `envs/`
-
-The simulator.
-
-- `wrapper.py`: wraps BulletArm so the agent gets batched PyTorch tensors
-
-### `networks/`
-
-The neural nets.
-
-- `encoders.py`: equivariant CNN that turns the heightmap image into features
-- `sac_heads.py`: the actor (picks actions) and critic (scores them), both equivariant
-
-### `trainers/`
-
-The main training loop. *(not written yet)*
-
-### `utils/`
-
-- `logging.py`: saves metrics, configs, and checkpoints to disk *(not written yet)*
-- `preprocessing.py`: merges the gripper state into the image so the encoder sees one tensor
-- `schedules.py`: things that change over training, like exploration decay *(not written yet)*
-- `seeding.py`: sets every random seed so runs are reproducible
 
 ## Reference
 

@@ -13,6 +13,9 @@ from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 import torch
+
+# The helping_hands_rl_envs __file__ patch lives in so2_equi_rl.envs.__init__
+# so it fires on any entry into the envs package, not just this module.
 from helping_hands_rl_envs import env_factory
 
 
