@@ -37,13 +37,8 @@ class TrainConfig:
     eval_episodes: int = 5
     eval_seed: int = 10_000
 
-    # Persist the replay buffer inside last.pt. Flip off for real runs where
-    # the full buffer (~13 GB at default capacity: 100k x 1x128x128 float32 for
-    # obs + next_obs) is too big to dump every ckpt_every.
-    save_buffer_on_ckpt: bool = True
-
     # Output directory root. RunLogger creates a timestamped subdir per run.
     output_dir: str = "outputs"
 
-    # None -> auto-select cuda if available else cpu at run start.
+    # None auto-selects cuda if available, else cpu, at run start.
     device: Optional[str] = None

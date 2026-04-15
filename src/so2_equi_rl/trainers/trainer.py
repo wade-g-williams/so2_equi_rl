@@ -65,18 +65,21 @@ class Trainer:
             self._state, self._obs = self.train_env.reset()
 
             # Warmup triggers on buffer length, not global_step, so a resume
-            # with save_buffer_on_ckpt=False still refills before training.
+            # whose sidecar buffer.pt is missing still refills before training.
             if len(self.buffer) < self.cfg.warmup_steps:
                 self._warmup()
 
             self._train_loop()
 
-            # Final eval + last ckpt so the end-of-run artifacts always exist.
+            # Final eval + full resume bundle (last.pt policy + buffer.pt
+            # sidecar) so end-of-run artifacts always exist and a follow-up
+            # run can resume without re-warming.
             final_metrics = self._evaluate()
             self.logger.log_scalars(
                 final_metrics, step=self.global_step, to_stdout=True
             )
-            self._save("last")
+            self._save_policy("last")
+            self.logger.save_checkpoint("buffer", self.buffer.state_dict())
         finally:
             self.logger.close()
 
@@ -136,16 +139,13 @@ class Trainer:
             "eval/length_mean": float(np.mean(lengths)),
         }
 
-    def _save(self, name: str, extra: Optional[Dict[str, Any]] = None) -> None:
-        # Full resume payload: agent state + optional buffer + RNGs + bookkeeping.
-        buffer_state = (
-            self.buffer.state_dict() if self.cfg.save_buffer_on_ckpt else None
-        )
+    def _save_policy(self, name: str) -> None:
+        # Policy-only payload so cadenced/best-eval saves stay MB-scale;
+        # the buffer lives in the buffer.pt sidecar, written at run end.
         payload: Dict[str, Any] = {
             "global_step": self.global_step,
             "best_success": self.best_success,
             "agent": self.agent.state_dict(),
-            "buffer": buffer_state,
             "rng": {
                 "torch_cpu": torch.get_rng_state(),
                 "torch_cuda": (
@@ -158,8 +158,6 @@ class Trainer:
             },
             "cfg_snapshot": dataclasses.asdict(self.cfg),
         }
-        if extra:
-            payload.update(extra)
         self.logger.save_checkpoint(name, payload)
 
     def _load(self, path: Path) -> None:
@@ -167,8 +165,8 @@ class Trainer:
         # on a cpu-only machine; the agent re-moves tensors to its device.
         payload = torch.load(path, map_location="cpu")
 
-        # Soft cfg diff: warn, don't raise. Dangerous shape mismatches get
-        # caught by ReplayBuffer.load_state_dict anyway.
+        # Soft cfg diff: warn, don't raise. Catches lr/gamma/tau drift
+        # between resume runs without blocking intentional config changes.
         current_cfg = dataclasses.asdict(self.cfg)
         saved_cfg = payload.get("cfg_snapshot", {})
         diffs = {
@@ -178,17 +176,22 @@ class Trainer:
         }
         if diffs:
             warnings.warn(
-                f"Trainer._load: cfg differs from checkpoint on fields {sorted(diffs)}",
+                f"Trainer._load: cfg differs from checkpoint (saved vs current): {diffs}",
                 stacklevel=2,
             )
 
         self.agent.load_state_dict(payload["agent"])
 
-        if payload.get("buffer") is not None:
-            self.buffer.load_state_dict(payload["buffer"])
+        # Buffer sidecar. The buffer lives next to the policy file as
+        # buffer.pt; it's only written at end of run, so a resume from a
+        # cadenced ckpt (mid-run) won't find one and falls through to warmup.
+        buffer_path = Path(path).parent / "buffer.pt"
+        if buffer_path.exists():
+            buffer_state = torch.load(buffer_path, map_location="cpu")
+            self.buffer.load_state_dict(buffer_state)
         else:
             warnings.warn(
-                "Trainer._load: checkpoint has no buffer (save_buffer_on_ckpt was False). "
+                f"Trainer._load: no buffer sidecar at {buffer_path}. "
                 "Warmup will refill before training resumes.",
                 stacklevel=2,
             )
@@ -305,7 +308,7 @@ class Trainer:
                 self.logger.log_scalars(eval_metrics, step=self.global_step)
                 if eval_metrics["eval/success_rate"] > self.best_success:
                     self.best_success = eval_metrics["eval/success_rate"]
-                    self._save("best")
+                    self._save_policy("best")
 
             if self.global_step % cfg.ckpt_every < B:
-                self._save("last")
+                self._save_policy("last")

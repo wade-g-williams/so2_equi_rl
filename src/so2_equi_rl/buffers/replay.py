@@ -1,6 +1,10 @@
 """Fixed-capacity replay buffer on preallocated CPU tensors. Once full,
 each new transition overwrites the oldest. Stores (state, obs, action,
 reward, next_state, next_obs, done) and uniform-samples batches.
+
+Obs/next_obs are quantized to uint8 on push and dequantized on sample,
+cutting buffer memory ~4x (13 GB -> 3.25 GB at default capacity). sample()
+still returns float32, so the agent code doesn't need to care.
 """
 
 from typing import NamedTuple, Tuple
@@ -52,19 +56,25 @@ class ReplayBuffer:
         obs_shape: Tuple[int, ...],
         action_dim: int,
         seed: int = 0,
+        obs_clip: float = 0.32,
+        obs_scale: float = 0.4,
     ) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be positive, got {capacity}")
         self.capacity = capacity
+        self._obs_clip = float(obs_clip)
+        self._obs_scale = float(obs_scale)
 
-        # CPU float32 storage. Fancy-index sampling copies into a new
-        # tensor so returned batches never alias the replay storage.
+        # CPU float32 for everything except obs/next_obs, which are quantized
+        # uint8 (invariant: stored in [0, 255], dequantized only at sample()).
+        # Fancy-index sampling copies into a new tensor so returned batches
+        # never alias the replay storage.
         self._state = torch.zeros((capacity, state_dim), dtype=torch.float32)
-        self._obs = torch.zeros((capacity, *obs_shape), dtype=torch.float32)
+        self._obs = torch.zeros((capacity, *obs_shape), dtype=torch.uint8)
         self._action = torch.zeros((capacity, action_dim), dtype=torch.float32)
         self._reward = torch.zeros((capacity,), dtype=torch.float32)
         self._next_state = torch.zeros((capacity, state_dim), dtype=torch.float32)
-        self._next_obs = torch.zeros((capacity, *obs_shape), dtype=torch.float32)
+        self._next_obs = torch.zeros((capacity, *obs_shape), dtype=torch.uint8)
         self._done = torch.zeros((capacity,), dtype=torch.float32)
 
         # Torch Generator keeps sampling reproducible without importing numpy.
@@ -77,6 +87,16 @@ class ReplayBuffer:
         self._state_dim = state_dim
         self._obs_shape = tuple(obs_shape)
         self._action_dim = action_dim
+
+    def _quantize_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        # Clip to the heightmap ceiling (BulletArm workspace bound) and
+        # rescale so obs_scale maps to 255 before rounding.
+        scaled = obs.clamp(min=0.0, max=self._obs_clip) * (255.0 / self._obs_scale)
+        return scaled.round().clamp(0, 255).to(torch.uint8)
+
+    def _dequantize_obs(self, obs_u8: torch.Tensor) -> torch.Tensor:
+        # Max quantization error is obs_scale/255.
+        return obs_u8.to(torch.float32) * (self._obs_scale / 255.0)
 
     def push(
         self,
@@ -113,11 +133,9 @@ class ReplayBuffer:
                 )
 
         state_c = _as_cpu_f32(state)
-        obs_c = _as_cpu_f32(obs)
         action_c = _as_cpu_f32(action)
         reward_c = _as_cpu_f32(reward)
         next_state_c = _as_cpu_f32(next_state)
-        next_obs_c = _as_cpu_f32(next_obs)
         done_c = _as_cpu_f32(done)
 
         # Invariant: stored actions are unscaled in [-1, 1]. Catches
@@ -129,6 +147,9 @@ class ReplayBuffer:
                 "ReplayBuffer stores unscaled actions in [-1, 1]; got "
                 f"max|a|={max_abs:.4f}. Did you forget to encode_action() before push?"
             )
+
+        obs_c = self._quantize_obs(_as_cpu_f32(obs))
+        next_obs_c = self._quantize_obs(_as_cpu_f32(next_obs))
 
         # Wrap-around write indices into the replay storage.
         idxs = (torch.arange(batch) + self._idx) % self.capacity
@@ -155,11 +176,11 @@ class ReplayBuffer:
 
         return Transition(
             state=self._state[idxs],
-            obs=self._obs[idxs],
+            obs=self._dequantize_obs(self._obs[idxs]),
             action=self._action[idxs],
             reward=self._reward[idxs],
             next_state=self._next_state[idxs],
-            next_obs=self._next_obs[idxs],
+            next_obs=self._dequantize_obs(self._next_obs[idxs]),
             done=self._done[idxs],
         )
 
@@ -168,7 +189,9 @@ class ReplayBuffer:
 
     def state_dict(self) -> dict:
         # Snapshot for checkpointing. Tensors are cloned so later push() calls
-        # can't mutate the saved copy before torch.save hits disk.
+        # can't mutate the saved copy before torch.save hits disk. Schema
+        # includes the quantization params so a resume catches a mismatched
+        # clip/scale (would silently corrupt stored obs).
         return {
             "state": self._state.clone(),
             "obs": self._obs.clone(),
@@ -185,6 +208,8 @@ class ReplayBuffer:
                 "state_dim": self._state_dim,
                 "obs_shape": self._obs_shape,
                 "action_dim": self._action_dim,
+                "obs_clip": self._obs_clip,
+                "obs_scale": self._obs_scale,
             },
         }
 
@@ -197,6 +222,8 @@ class ReplayBuffer:
             "state_dim": self._state_dim,
             "obs_shape": self._obs_shape,
             "action_dim": self._action_dim,
+            "obs_clip": self._obs_clip,
+            "obs_scale": self._obs_scale,
         }
         if schema != expected:
             raise ValueError(
