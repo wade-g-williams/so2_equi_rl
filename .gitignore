@@ -1,5 +1,42 @@
-# Reference materials
-/reference
+# Reference materials: keep the PDFs, ignore all markdown (notes + plans)
+/reference/*.md
+
+# Scripts
+/scripts/render_env_panel.py
+
+# Report: track sources and final PDFs, ignore LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.nav
+report/*.snm
+report/*.toc
+report/*.bbl
+report/*.blg
+report/*.fls
+report/*.fdb_latexmk
+report/*.synctex.gz
+report/final_report.pdf
+report/final_report.tex
+
+# Stray poster build artifacts at repo root (from earlier compiles)
+/poster.aux
+/poster.log
+/poster.out
+/poster.fls
+/poster.fdb_latexmk
+/poster.synctex.gz
+/poster.nav
+/poster.snm
+/poster.toc
+/poster.pdf
+
+# Training outputs: track tfevents + npy + json + pdf so Joey can view in
+# tensorboard and replot. Block checkpoints, replay buffers, ckpt dirs.
+outputs/**/*.pt
+outputs/**/*.pth
+outputs/**/buffer*
+outputs/**/ckpts/
 
 # Python
 __pycache__/
@@ -15,21 +52,14 @@ build/
 venv/
 .conda/
 
-# Training outputs
-outputs/
+# Other training artifacts
 checkpoints/
 wandb/
 runs/
-*.pt
-*.pth
-
-# Scripts
 
 # Testing
 .pytest_cache/
 /tests
-
-# Env
 
 # OS
 .DS_Store
