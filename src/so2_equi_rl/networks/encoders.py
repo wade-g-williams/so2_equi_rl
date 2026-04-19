@@ -1,26 +1,26 @@
-"""Rotation-equivariant image encoder matching Wang et al. (2022). C_N group
-via e2cnn R2Conv layers; default C_8 matches the paper.
+"""Image encoders. Equivariant C_N stack from Wang et al. (2022) and a
+plain CNN baseline. Default C_8 matches the paper.
 """
 
 import torch
 from e2cnn import gspaces, nn as enn
 
-# The encoder's block stack reduces spatial 128 -> 1 exactly. Other
-# sizes would produce >1x1 output and silently break the downstream
-# .view(B, -1) flatten in actor/critic heads.
+# The block stack reduces 128 spatial down to 1 exactly. Other sizes
+# silently break the .view(B, -1) flatten in the actor and critic heads.
 EXPECTED_OBS_SIZE = 128
 
 
 def irrep1_multiplicity(group_order: int) -> int:
-    # irrep(1) is 2D for N >= 3 (one copy covers (dx, dy)); for N = 2 it's the 1D sign rep, so need two.
+    # irrep(1) is 2D for N >= 3 (one copy covers (dx, dy)). For N = 2 it's
+    # the 1D sign rep, so we need two copies.
     return 2 if group_order == 2 else 1
 
 
 class EquiEncoder(torch.nn.Module):
-    """C_N-equivariant conv encoder. 7 R2Conv blocks, regular_repr hidden,
-    maps (B, obs_channels, 128, 128) -> GeometricTensor with n_hidden*N channels
-    at 1x1 spatial. Rotating the input by 360/N deg cyclically permutes the
-    feature map.
+    """C_N-equivariant conv encoder. Seven R2Conv blocks with regular_repr
+    hidden fields. Takes (B, obs_channels, 128, 128), returns a
+    GeometricTensor with n_hidden * N channels at 1x1 spatial. Rotating
+    the input by (360 / N) degrees cyclically permutes the feature map.
     """
 
     def __init__(
@@ -31,23 +31,20 @@ class EquiEncoder(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        # Block 1 uses n_hidden // 8 channels, so n_hidden has to be
-        # divisible by 8 or the first block silently truncates.
+        # Block 1 uses n_hidden // 8 channels, so n_hidden must divide 8.
         if n_hidden % 8 != 0:
             raise ValueError(
                 "n_hidden must be divisible by 8 (block 1 uses n_hidden // 8 channels); "
                 f"got n_hidden={n_hidden}"
             )
 
-        # Stored so downstream heads can read them without re-receiving
-        # the same kwargs on the caller side.
         self.obs_channels = obs_channels
         self.n_hidden = n_hidden
         self.group_order = group_order
 
         self.gspace = gspaces.Rot2dOnR2(N=group_order)
 
-        # Both input channels are scalars that don't change under rotation
+        # Both input channels are scalars (don't change under rotation).
         self.input_type = enn.FieldType(
             self.gspace, [self.gspace.trivial_repr] * obs_channels
         )
@@ -95,14 +92,11 @@ class EquiEncoder(torch.nn.Module):
         )
 
         self.output_type = regular_types[-1]
-        # Flat channel count after the final 1x1 spatial collapse: last
-        # multiplicity * group_order. Exposed so downstream heads / tests
-        # can size flatten layers without reaching into FieldType internals.
+        # Flat channel count after the final 1x1 collapse. Exposed so heads
+        # and tests don't have to reach into FieldType internals.
         self.output_dim = mults[-1] * group_order
 
     def forward(self, obs: torch.Tensor) -> enn.GeometricTensor:
-        # The conv stack is hand-tuned for 128x128 input; other sizes
-        # produce non-1x1 output and break downstream flatten logic.
         if obs.shape[-2:] != (EXPECTED_OBS_SIZE, EXPECTED_OBS_SIZE):
             raise ValueError(
                 f"EquiEncoder expects (B, C, {EXPECTED_OBS_SIZE}, {EXPECTED_OBS_SIZE}) "
@@ -113,12 +107,10 @@ class EquiEncoder(torch.nn.Module):
 
 
 class CNNEncoder(torch.nn.Module):
-    """Plain-CNN image encoder baseline. Mirrors the paper's sac_net.py
-    schedule of 7 conv blocks with channel widths (n_hidden // 8, // 4,
-    // 2, 1x, 2x, 2x, 1x) so the CNN SAC run lines up with EquiEncoder.
-    Takes (B, obs_channels, 128, 128) and returns (B, n_hidden, 1, 1).
-    group_order is accepted for kwarg uniformity with EquiEncoder and
-    ignored.
+    """Plain-CNN baseline. Channel schedule (n_hidden // 8, // 4, // 2, 1x,
+    2x, 2x, 1x) lines up with EquiEncoder so the CNN SAC run is comparable.
+    Takes (B, obs_channels, 128, 128), returns (B, n_hidden, 1, 1).
+    group_order is accepted for kwarg parity with EquiEncoder and ignored.
     """
 
     def __init__(
@@ -129,21 +121,17 @@ class CNNEncoder(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        # Block 1 uses n_hidden // 8 channels; enforce divisibility so we
-        # never silently truncate. Matches EquiEncoder's constraint.
         if n_hidden % 8 != 0:
             raise ValueError(
                 "n_hidden must be divisible by 8 (block 1 uses n_hidden // 8 channels); "
                 f"got n_hidden={n_hidden}"
             )
 
-        # Exposed so heads can size themselves without re-receiving kwargs.
         self.obs_channels = obs_channels
         self.n_hidden = n_hidden
         self.group_order = group_order
 
-        # Channel schedule matches paper's SACEncoder under n_hidden=128.
-        # Block 6 is 2*n_hidden (not 1*n_hidden) to match reference repo.
+        # Channel schedule. Block 6 is 2*n_hidden (not 1*n_hidden) to match the reference repo.
         c = (
             n_hidden // 8,
             n_hidden // 4,
@@ -183,15 +171,9 @@ class CNNEncoder(torch.nn.Module):
             torch.nn.ReLU(inplace=True),
         )
 
-        # Flat feature count after the 1x1 spatial collapse equals the
-        # final block's channel count. group_order is accepted for kwarg
-        # uniformity with EquiEncoder and ignored here (SACAgent forwards
-        # cfg.group_order to every encoder_cls blindly).
         self.output_dim = n_hidden
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        # Conv stack is hand-tuned for 128x128; other sizes produce a
-        # non-1x1 output and break downstream flatten logic in heads.
         if obs.shape[-2:] != (EXPECTED_OBS_SIZE, EXPECTED_OBS_SIZE):
             raise ValueError(
                 f"CNNEncoder expects (B, C, {EXPECTED_OBS_SIZE}, {EXPECTED_OBS_SIZE}) "

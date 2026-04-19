@@ -1,6 +1,6 @@
-"""Auto-registers the fields of a config dataclass as --kebab-case argparse
-flags. Shared by scripts/train_sac.py and scripts/train_sac_drq.py so the
-two CLIs stay in lockstep as configs evolve.
+"""Auto-registers config-dataclass fields as --kebab-case argparse flags.
+Shared by the train_*.py scripts so adding a config field doesn't mean
+editing every CLI by hand.
 """
 
 import argparse
@@ -10,7 +10,6 @@ from typing import Any, Callable, Dict, Union
 
 def _str2bool(s: str) -> bool:
     # argparse's default bool cast is broken: bool("False") == True.
-    # Accept the usual truthy/falsey tokens case-insensitively.
     low = s.lower()
     if low in ("true", "t", "yes", "y", "1"):
         return True
@@ -20,8 +19,8 @@ def _str2bool(s: str) -> bool:
 
 
 def _parse_with_none(inner_cast: Callable[[str], Any]) -> Callable[[str], Any]:
-    # Wraps an inner cast so the string "none"/"null" yields Python None.
-    # Lets the CLI explicitly override an Optional field back to None.
+    # Wraps a cast so "none"/"null" yield Python None. Lets the CLI
+    # explicitly override an Optional field back to None.
     def parse(s: str) -> Any:
         if s.lower() in ("none", "null"):
             return None
@@ -31,8 +30,7 @@ def _parse_with_none(inner_cast: Callable[[str], Any]) -> Callable[[str], Any]:
 
 
 def _unwrap_optional(ftype: Any):
-    # Returns (inner_type, is_optional). For Optional[X] = Union[X, None]:
-    # pulls X out and flags True. Leaves bare types untouched.
+    # Optional[X] = Union[X, None] -> (X, True). Bare types -> (X, False).
     origin = getattr(ftype, "__origin__", None)
     if origin is Union:
         non_none = [a for a in ftype.__args__ if a is not type(None)]  # noqa: E721
@@ -42,15 +40,13 @@ def _unwrap_optional(ftype: Any):
 
 
 def _is_tuple_type(ftype: Any) -> bool:
-    # Skipped by the auto-register loop: Tuple fields (only p_range today)
-    # are unlikely one-off CLI overrides and would need nargs plumbing.
+    # Tuple fields (only p_range today) skip auto-registration; would need nargs plumbing.
     return getattr(ftype, "__origin__", None) is tuple
 
 
 def add_dataclass_args(parser: argparse.ArgumentParser, cls: type) -> None:
-    # Register --kebab-name flags for every supported field on cls.
-    # Supported: int / float / str / bool, with Optional[X] for each.
-    # Silently skips unsupported shapes (tuples, nested dataclasses, etc).
+    # Register --kebab-name flags for int, float, str, bool fields (and
+    # Optional[X] for each). Silently skips unsupported shapes.
     for f in dataclasses.fields(cls):
         ftype = f.type
         if _is_tuple_type(ftype):
@@ -63,7 +59,7 @@ def add_dataclass_args(parser: argparse.ArgumentParser, cls: type) -> None:
         elif inner in (int, float, str):
             cast = inner
         else:
-            continue  # skip unknown types rather than crashing
+            continue
 
         if is_optional:
             cast = _parse_with_none(cast)
@@ -78,8 +74,8 @@ def add_dataclass_args(parser: argparse.ArgumentParser, cls: type) -> None:
 
 
 def extract_dataclass_kwargs(args: argparse.Namespace, cls: type) -> Dict[str, Any]:
-    # Build a kwargs dict the dataclass ctor accepts. Fields skipped in
-    # add_dataclass_args (tuples) get filtered out by hasattr.
+    # Filter Namespace down to fields the dataclass ctor accepts. Skipped
+    # fields (tuples) get filtered out by hasattr.
     return {
         f.name: getattr(args, f.name)
         for f in dataclasses.fields(cls)

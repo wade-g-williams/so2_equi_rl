@@ -1,6 +1,5 @@
-"""Abstract base for RL agents. Concrete agents (SAC, DQN, ...) implement
-this surface so the trainer stays agnostic: select_action for rollouts,
-update for learning, state_dict pair for checkpointing.
+"""Abstract Agent base class. The trainer only calls the methods on
+this class, concrete agents (SAC, DQN, ...) implement them.
 """
 
 from abc import ABC, abstractmethod
@@ -12,9 +11,8 @@ from torch import Tensor
 class ActionPair(NamedTuple):
     """Return shape for Agent.select_action.
 
-    unscaled: what the replay buffer stores. SAC: [-1, 1] continuous;
-    DQN: int64 grid index.
-    physical: what env.step consumes (pxyzr in physical units).
+    unscaled goes into the buffer (SAC: [-1, 1] continuous; DQN: int64
+    grid index). physical goes into env.step (pxyzr in physical units).
     """
 
     unscaled: Tensor
@@ -22,8 +20,8 @@ class ActionPair(NamedTuple):
 
 
 class Agent(ABC):
-    """Minimal contract the trainer calls against. Networks, optimizers,
-    action decoders, and temperature tuning all live inside subclasses.
+    """Minimal contract the trainer calls. Networks, optimizers, action
+    decoder, and entropy tuning all live in subclasses.
     """
 
     @abstractmethod
@@ -37,15 +35,12 @@ class Agent(ABC):
 
     @abstractmethod
     def update(self, batch: Any) -> Dict[str, float]:
-        """One gradient step on a minibatch. Returns scalar losses/metrics
-        the trainer logs verbatim.
-        """
+        """One gradient step. Returns scalar losses and metrics for logging."""
 
     @abstractmethod
     def state_dict(self) -> Dict[str, Any]:
-        """Full trainable state for checkpointing: nets, optimizers, and
-        any tuned temperatures. Lives on the agent so optimizer state
-        travels with the weights.
+        """Full trainable state for checkpointing. Optimizer state lives
+        with the weights.
         """
 
     @abstractmethod

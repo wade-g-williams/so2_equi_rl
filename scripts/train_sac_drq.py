@@ -1,8 +1,5 @@
-"""CLI entry point for DrQ-SAC training.
-
-Mirrors scripts/train_sac.py, swapping SACConfig + SACAgent for their DrQ
-counterparts and reusing the same _ENCODER_VARIANTS dict so --encoder
-equi|cnn selects the same encoder/actor/critic triples.
+"""CLI entry point for DrQ-SAC training. Mirrors scripts/train_sac.py
+with the DrQ config and agent.
 """
 
 import argparse
@@ -20,13 +17,12 @@ from so2_equi_rl.networks import (
     EquiCritic,
     EquiEncoder,
 )
-from so2_equi_rl.trainers.trainer import Trainer
+from so2_equi_rl.trainers import SACTrainer
 from so2_equi_rl.utils import set_seed
 from so2_equi_rl.utils.cli_args import add_dataclass_args, extract_dataclass_kwargs
 from so2_equi_rl.utils.logging import RunLogger
 
-# Same (encoder, actor, critic) triples as train_sac.py. DrQ reuses the
-# vanilla SAC heads unchanged; only the update rule differs.
+# DrQ reuses the vanilla SAC heads; only the update rule differs.
 _ENCODER_VARIANTS = {
     "equi": (EquiEncoder, EquiActor, EquiCritic),
     "cnn": (CNNEncoder, CNNActor, CNNCritic),
@@ -56,8 +52,7 @@ def main() -> None:
 
     cfg = SACDrQConfig(**extract_dataclass_kwargs(args, SACDrQConfig))
 
-    # Seed before constructing anything that draws from the global torch RNG.
-    # SACDrQAgent's aug RNG seeds itself from cfg.seed + a fixed offset.
+    # Seed before any global-RNG draws. The aug RNG seeds itself from cfg.seed + a fixed offset.
     set_seed(cfg.seed)
 
     train_env = EnvWrapper(
@@ -94,7 +89,7 @@ def main() -> None:
     logger = RunLogger(cfg, run_name=args.run_name)
     print(f"[train_sac_drq] run dir: {logger.run_dir}")
 
-    trainer = Trainer(cfg, agent, train_env, eval_env, buffer, logger)
+    trainer = SACTrainer(cfg, agent, train_env, eval_env, buffer, logger)
     trainer.run(resume_path=args.resume)
 
     print(f"[train_sac_drq] done. artifacts at: {logger.run_dir}")

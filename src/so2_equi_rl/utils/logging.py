@@ -1,7 +1,6 @@
-"""Run-directory logging: TB + JSONL metrics, git hash, config dump.
-
-One RunLogger per run. Owns a timestamped dir under cfg.output_dir and is the
-single sink for metrics, checkpoints, and provenance.
+"""Run-directory logging. One RunLogger per run owns a timestamped dir
+under cfg.output_dir and writes metrics, checkpoints, and provenance
+(config dump, git hash) to it.
 """
 
 import dataclasses
@@ -19,8 +18,8 @@ from so2_equi_rl.configs.base import TrainConfig
 
 
 def _git_info(repo_root: Path) -> str:
-    # Returns "<sha>", "<sha>-dirty", or "no-git". Never raises:
-    # a missing .git or missing git binary shouldn't kill a run.
+    # Returns "<sha>", "<sha>-dirty", or "no-git". Never raises so a
+    # missing .git or git binary doesn't kill a run.
     try:
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -42,10 +41,10 @@ def _git_info(repo_root: Path) -> str:
 
 
 class RunLogger:
-    """Timestamped run directory + metric sink + checkpoint saver."""
+    """Timestamped run directory, metric sink, and checkpoint saver."""
 
     def __init__(self, cfg: TrainConfig, run_name: Optional[str] = None) -> None:
-        # Build the run dir name. Timestamp first so `ls outputs/` sorts chronologically.
+        # Timestamp first so `ls outputs/` sorts chronologically.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         parts = [stamp, cfg.env_name]
         if run_name:
@@ -55,15 +54,14 @@ class RunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.ckpt_dir.mkdir(exist_ok=True)
 
-        # Provenance: config snapshot + git state. Written once at construction.
+        # Provenance, written once at construction.
         cfg_path = self.run_dir / "config.yaml"
         with cfg_path.open("w") as f:
             yaml.safe_dump(dataclasses.asdict(cfg), f, sort_keys=False)
         (self.run_dir / "git.txt").write_text(_git_info(Path.cwd()) + "\n")
 
-        # TB for live curves, JSONL for offline diffing. Each line is its own
-        # dict, so new metric keys (e.g. eval/* appearing mid-run) just start
-        # showing up in later rows without a schema rewrite.
+        # TB for live curves, JSONL for offline diffing. JSONL is
+        # schema-free per row so new metric keys mid-run just appear.
         self.tb = SummaryWriter(log_dir=str(self.run_dir))
         self._jsonl_file = (self.run_dir / "metrics.jsonl").open("w", buffering=1)
 
@@ -75,12 +73,10 @@ class RunLogger:
         step: int,
         to_stdout: bool = False,
     ) -> None:
-        # TB is schema-free, so one add_scalar per key and we're done.
         for k, v in metrics.items():
             self.tb.add_scalar(k, v, step)
 
-        # JSONL: append one standalone row per call. Float-cast so numpy
-        # scalars / 0-d tensors serialize cleanly.
+        # Float-cast so numpy scalars and 0-d tensors serialize cleanly.
         row = {"step": int(step), **{k: float(v) for k, v in metrics.items()}}
         self._jsonl_file.write(json.dumps(row) + "\n")
 
@@ -89,8 +85,7 @@ class RunLogger:
             print(f"[step {step}] {pretty}")
 
     def save_checkpoint(self, name: str, payload: Dict[str, Any]) -> Path:
-        # Atomic save: write to .pt.tmp then rename. A SIGINT mid-save
-        # leaves the previous good checkpoint intact instead of a truncated file.
+        # Atomic save. SIGINT mid-save leaves the previous good ckpt intact.
         path = self.ckpt_dir / f"{name}.pt"
         tmp = path.with_suffix(".pt.tmp")
         torch.save(payload, tmp)

@@ -1,4 +1,4 @@
-"""Shared utilities: obs preprocessing (tile_state), global seeding (set_seed), and SO(2) data augmentation (rotate_obs, rotate_action_dxy, random_so2_augment)."""
+"""Shared utilities for obs preprocessing, global seeding, and SO(2) data augmentation."""
 
 from so2_equi_rl.utils.augmentation import (
     random_so2_augment,

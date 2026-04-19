@@ -1,11 +1,7 @@
-"""Plot eval-reward learning curves from outputs/<run>/info/eval_rewards.npy.
+"""Learning-curve plots from outputs/<run>/info/eval_rewards.npy. Auto-discovers
+run dirs by reading parameters.json, drops smoke-test runs (empty eval),
+aggregates seeds into mean + 1-std band per task.
 
-Run dirs are auto-discovered by reading parameters.json. Runs whose
-eval_rewards.npy is empty (smoke tests) are skipped. For each task, seeds
-are aggregated into a mean curve with a +/- 1 std shaded band.
-
-Usage:
-    python scripts/plot_results.py
     python scripts/plot_results.py --outputs outputs --out outputs/plots
 """
 
@@ -17,7 +13,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Poster typography: serif, large enough to stay legible at 36x24 in.
+# Poster typography, sized to stay legible at 36x24 in.
 mpl.rcParams.update(
     {
         "font.family": "serif",
@@ -43,11 +39,11 @@ ALG_LABEL = {
     "rad_sac": "RAD SAC",
 }
 ALG_COLOR = {
-    "equi_sac": "#2A9D8F",  # teal accent -- highlighted model
-    "cnn_sac": "#64748B",  # slate
-    "drq_sac": "#E9C46A",  # sand
-    "ferm_sac": "#1B2A4E",  # navy
-    "rad_sac": "#E76F51",  # coral
+    "equi_sac": "#2A9D8F",  # teal, highlighted
+    "cnn_sac": "#64748B",
+    "drq_sac": "#E9C46A",
+    "ferm_sac": "#1B2A4E",
+    "rad_sac": "#E76F51",
 }
 
 ENV_ORDER = ["block_picking", "block_pulling", "drawer_opening"]
@@ -59,7 +55,7 @@ ENV_LABEL = {
 
 
 def discover_runs(outputs_dir: Path):
-    # Walk outputs/, load each run's eval curve + metadata, drop smoke tests.
+    # Walk outputs/, load each run's eval curve and metadata, skip smoke tests.
     runs = []
     for run_dir in sorted(outputs_dir.iterdir()):
         info = run_dir / "info"
@@ -70,12 +66,12 @@ def discover_runs(outputs_dir: Path):
 
         eval_rewards = np.load(eval_path)
         if eval_rewards.size == 0:
-            continue  # smoke test -- no eval data
+            continue  # smoke test, no eval data
 
         with params_path.open() as f:
             params = json.load(f)
 
-        # env field is "close_loop_<task>" -- strip the prefix for grouping
+        # env field is "close_loop_<task>", strip the prefix for grouping.
         env = params["env"].replace("close_loop_", "")
         runs.append(
             {
@@ -105,8 +101,7 @@ def group_by_env_alg(runs):
         )
         alg_d["seeds"].append(r["eval_rewards"])
 
-    # After collecting, pad/truncate to the shortest curve length per (env,alg)
-    # so np.stack works even if a run was cut short.
+    # Truncate to the shortest curve per (env, alg) so np.stack works if a run was cut short.
     for env, algs in grouped.items():
         for alg, d in algs.items():
             min_len = min(len(s) for s in d["seeds"])
@@ -119,7 +114,8 @@ def group_by_env_alg(runs):
 
 
 def plot_env(ax, env_data, env_name, show_legend=True):
-    # One panel: mean curve + 1-std band per algorithm, in canonical order.
+    # One panel per env. Each algorithm draws a mean curve with a 1-std
+    # shaded band, in canonical order.
     for alg in ALG_ORDER:
         if alg not in env_data:
             continue

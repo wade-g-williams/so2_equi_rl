@@ -1,6 +1,4 @@
-"""Neural nets for the SO(2)-equivariant agent: image encoder, SAC actor,
-and twin-Q critic. Built on e2cnn over C_N.
-"""
+"""Nets for the SO(2)-equivariant agent. Image encoder, SAC actor, twin-Q critic, built on e2cnn over C_N."""
 
 from so2_equi_rl.networks.sac_heads import (
     CNNActor,

@@ -1,8 +1,6 @@
-"""CLI entry point for SAC training.
-
-Auto-registers every SACConfig field as a --kebab-case flag, builds the six
-components, hands them to Trainer, and runs. Thin on purpose; loop logic
-lives in trainers/trainer.py.
+"""CLI entry point for SAC training. Auto-registers SACConfig fields as
+--kebab-case flags, builds the six components, hands them to SACTrainer.
+Loop logic lives in trainers/.
 """
 
 import argparse
@@ -20,13 +18,12 @@ from so2_equi_rl.networks import (
     EquiCritic,
     EquiEncoder,
 )
-from so2_equi_rl.trainers.trainer import Trainer
+from so2_equi_rl.trainers import SACTrainer
 from so2_equi_rl.utils import set_seed
 from so2_equi_rl.utils.cli_args import add_dataclass_args, extract_dataclass_kwargs
 from so2_equi_rl.utils.logging import RunLogger
 
-# Maps the --encoder flag to the (encoder, actor, critic) triple that
-# SACAgent's DI constructor expects. One entry per baseline variant.
+# Maps --encoder to the (encoder, actor, critic) triple SACAgent's DI ctor expects.
 _ENCODER_VARIANTS = {
     "equi": (EquiEncoder, EquiActor, EquiCritic),
     "cnn": (CNNEncoder, CNNActor, CNNCritic),
@@ -69,7 +66,7 @@ def main() -> None:
     )
     eval_env = EnvWrapper(
         env_name=cfg.env_name,
-        num_processes=0,  # eval is single-slot; cfg.num_processes is training only
+        num_processes=0,  # eval is single-slot
         seed=cfg.eval_seed,
         obs_size=cfg.obs_size,
         max_steps=cfg.max_steps,
@@ -94,7 +91,7 @@ def main() -> None:
     logger = RunLogger(cfg, run_name=args.run_name)
     print(f"[train_sac] run dir: {logger.run_dir}")
 
-    trainer = Trainer(cfg, agent, train_env, eval_env, buffer, logger)
+    trainer = SACTrainer(cfg, agent, train_env, eval_env, buffer, logger)
     trainer.run(resume_path=args.resume)
 
     print(f"[train_sac] done. artifacts at: {logger.run_dir}")

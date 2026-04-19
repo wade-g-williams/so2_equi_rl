@@ -1,15 +1,6 @@
 """RAD-SAC. Subclass of SACAgent that rotates (obs, next_obs, action) by
-one shared per-row theta and then runs a vanilla SAC update on the
-augmented transition.
-
-Unlike DrQ, RAD does not average the target over K copies or the loss
-over M copies. The shared theta across obs, next_obs, and the (dx, dy)
-columns of the action is what keeps the transition on the SO(2)-
-equivariant manifold.
-
-Aug RNG lives on a dedicated CPU Generator seeded from cfg.seed + a
-fixed offset, so it's decoupled from the global torch RNG (network init,
-env, buffer sampling) but still reproducible from one int.
+one shared per-row theta and runs a vanilla SAC update on the rotated
+transition. No K/M averaging unlike DrQ.
 """
 
 from typing import Dict, Type
@@ -22,9 +13,7 @@ from so2_equi_rl.buffers.replay import Transition
 from so2_equi_rl.configs.sac_rad import SACRADConfig
 from so2_equi_rl.utils import augmentation as aug_mod
 
-# Fixed offset on top of cfg.seed so the RAD aug RNG is decoupled from
-# both the global torch RNG and DrQ's aug RNG (offset 1337). So two
-# variants sharing cfg.seed don't replay the same theta sequence.
+# Fixed offset on cfg.seed so the aug RNG is decoupled from DrQ (1337) and FERM.
 _AUG_SEED_OFFSET = 2022
 
 
@@ -41,23 +30,17 @@ class SACRADAgent(SACAgent):
         super().__init__(cfg, encoder_cls, actor_cls, critic_cls)
 
         self.rad_aug_mode = cfg.rad_aug_mode
-        # rad_group_order resolves to cfg.group_order in SACRADConfig.__post_init__,
-        # so None should not leak this far. Cast defensively.
         self.rad_group_order = int(
             cfg.rad_group_order if cfg.rad_group_order is not None else cfg.group_order
         )
 
-        # Dedicated CPU Generator. Same rationale as sac_drq.py: theta
-        # is built via torch.randint/torch.rand with no device forwarding,
-        # so its output is CPU; rotate_obs moves theta to obs.device for
-        # us. A cuda generator would crash on torch.randint.
+        # CPU generator. sample_so2_angles uses torch.randint which would crash on a cuda generator.
         self._aug_gen = torch.Generator(device="cpu")
         self._aug_gen.manual_seed(int(cfg.seed) + _AUG_SEED_OFFSET)
 
     def update(self, batch: Transition) -> Dict[str, float]:
-        # Rotate (obs, next_obs, action) by one shared theta per row, then
-        # hand off to the base SAC update. State, reward, next_state, and
-        # done are SO(2)-invariant so they pass through untouched.
+        # Rotate (obs, next_obs, action) by one shared theta per row, hand off to base SAC.
+        # state, reward, next_state, done are SO(2)-invariant so they pass through.
         batch = batch.to(self.device, non_blocking=True)
 
         B = batch.obs.shape[0]
@@ -72,8 +55,6 @@ class SACRADAgent(SACAgent):
         aug_next_obs = aug_mod.rotate_obs(batch.next_obs, theta)
         aug_action = aug_mod.rotate_action_dxy(batch.action, theta)
 
-        # _replace builds a new Transition with the three rotated fields
-        # swapped in; state, reward, next_state, done are the original refs.
         aug_batch = batch._replace(
             obs=aug_obs,
             next_obs=aug_next_obs,

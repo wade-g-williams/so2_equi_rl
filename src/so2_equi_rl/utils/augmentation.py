@@ -1,14 +1,11 @@
-"""SO(2) rotation helpers for obs and action batches. Used by RAD/DrQ-style
-augmentation to rotate obs, next_obs, and the planar part of the action by
-one shared per-row angle. Runs as a data transform on the replay-sampled
-batch, so there's no gradient to carry and no hidden state between calls.
+"""SO(2) rotation helpers for obs and action batches. Used by RAD and
+DrQ to rotate obs, next_obs, and the planar (dx, dy) part of the action
+by per-row angles. Runs on replay-sampled batches so there's no gradient
+to carry and no hidden state between calls.
 
-rotate_obs goes through bilinear grid_sample with padding_mode='border'.
-Border padding matches scipy.ndimage.rotate(mode='nearest') on the
-zero-background heightmap. Bilinear replaces scipy's default cubic because
-the heightmap is smooth enough that interpolation order stops mattering,
-and grid_sample is cheap on GPU. rotate_action_dxy rotates the (dx, dy)
-columns of the unscaled action and passes the rest through.
+rotate_obs uses bilinear grid_sample with padding_mode='border', which
+matches scipy.ndimage.rotate(mode='nearest') on the zero-background
+heightmap.
 """
 
 import math
@@ -17,13 +14,11 @@ from typing import Tuple
 import torch
 import torch.nn.functional as F
 
-# Valid mode strings for sample_so2_angles / random_so2_augment.
 _VALID_MODES = ("continuous", "discrete_cN")
 
 
 def _broadcast_theta(theta: torch.Tensor, batch: int) -> torch.Tensor:
-    # Accept a scalar, a (1,), or a (B,) tensor so callers can pass a single
-    # angle without pre-expanding. Returned shape is always (B,).
+    # Accept a scalar, (1,), or (B,) so callers don't have to pre-expand a single angle.
     if theta.ndim == 0 or theta.shape == (1,):
         theta = theta.expand(batch)
     if theta.shape != (batch,):
@@ -48,8 +43,7 @@ def sample_so2_angles(
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
 
     if mode == "continuous":
-        # Uniform on [0, 2pi). Paper default aug_type='so2'. group_order is
-        # unused in this branch, so we skip validating it here.
+        # Uniform on [0, 2pi). group_order is unused here.
         return torch.rand(batch, generator=generator) * (2.0 * math.pi)
 
     # Discrete C_N lattice: k ~ Uniform{0, ..., N-1}, theta = 2 pi k / N.
@@ -83,9 +77,8 @@ def rotate_obs(obs: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     affine[:, 1, 0] = sin
     affine[:, 1, 1] = cos
 
-    # Border padding matches scipy rotate(mode='nearest') on the zero-background
-    # heightmap. Zero padding would bleed the outside into the rotated image
-    # and break paper faithfulness.
+    # Border padding matches scipy rotate(mode='nearest'). Zero padding
+    # would bleed the outside in and diverge from the paper.
     grid = F.affine_grid(affine, obs.shape, align_corners=False)
     return F.grid_sample(
         obs,
@@ -108,9 +101,8 @@ def rotate_action_dxy(action: torch.Tensor, theta: torch.Tensor) -> torch.Tensor
     B = action.shape[0]
     theta = _broadcast_theta(theta, B).to(device=action.device, dtype=action.dtype)
 
-    # Action column layout from sac.py::decode_action:
-    # 0 = p (gripper), 1 = dx, 2 = dy, 3 = dz, 4 = dtheta.
-    # Only columns 1-2 transform as irrep(1); the rest are invariant.
+    # Action layout from sac.py::decode_action: 0 = p, 1 = dx, 2 = dy,
+    # 3 = dz, 4 = dtheta. Only cols 1-2 transform as irrep(1).
     cos = torch.cos(theta)
     sin = torch.sin(theta)
     dx = action[:, 1]
@@ -118,8 +110,8 @@ def rotate_action_dxy(action: torch.Tensor, theta: torch.Tensor) -> torch.Tensor
     rotated_dx = cos * dx - sin * dy
     rotated_dy = sin * dx + cos * dy
 
-    # Rebuild the action out-of-place so the op is autograd-safe and so it
-    # handles action tensors with more than five columns without a special case.
+    # Rebuild out-of-place so the op is autograd-safe and handles
+    # action tensors with > 5 columns.
     cols = [action[:, 0], rotated_dx, rotated_dy] + [
         action[:, i] for i in range(3, action.shape[1])
     ]
@@ -137,17 +129,15 @@ def random_so2_augment(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Apply one shared per-row SO(2) rotation to obs, next_obs, and action.
 
-    Returns the rotated (obs, next_obs, action) tuple. The scalar state
-    channels are SO(2)-invariant, so this function only takes the tensors
-    that transform under rotation and leaves state/reward/done to the caller.
+    Returns the rotated tuple. State, reward, and done are SO(2)-invariant
+    and stay with the caller.
     """
     B = obs.shape[0]
     theta = sample_so2_angles(
         B, mode=mode, group_order=group_order, generator=generator
     )
 
-    # Shared theta per row across obs / next_obs / action is the equivariance
-    # contract: break it and the augmentation stops being a symmetry.
+    # Shared theta per row across all three is the equivariance contract.
     rotated_obs = rotate_obs(obs, theta)
     rotated_next_obs = rotate_obs(next_obs, theta)
     rotated_action = rotate_action_dxy(action, theta)

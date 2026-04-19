@@ -1,14 +1,13 @@
-"""Observation preprocessing: tile the scalar gripper state onto the
-heightmap so the encoder sees one 2-channel tensor instead of an (obs, state)
-pair.
+"""Tile the scalar gripper state onto the heightmap so the encoder sees
+one (C+S, H, W) tensor.
 """
 
 import torch
 
 
 def tile_state(obs: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
-    # (B,C,H,W) + (B,S) -> (B,C+S,H,W): broadcast each state scalar to a
-    # full (H, W) plane and stack onto the heightmap.
+    # obs (B, C, H, W) + state (B, S) -> (B, C+S, H, W). Each state scalar
+    # broadcasts to a full (H, W) plane stacked onto the heightmap.
     batch, _, height, width = obs.shape
     state_dim = state.shape[1]
     state_plane = state.view(batch, state_dim, 1, 1).expand(
