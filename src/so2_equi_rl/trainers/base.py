@@ -1,8 +1,6 @@
-"""Agent-agnostic trainer. Owns the env rollout, buffer writes, update
-scheduling, eval, and checkpointing. Trainer talks to the Agent contract
-(select_action / update / state_dict) and to EnvWrapper, ReplayBuffer,
-RunLogger. Nothing SAC-specific lives here, so the DQN baseline reuses
-the same class.
+"""Agent-agnostic trainer skeleton. Owns env rollout, buffer writes,
+update scheduling, eval, and checkpointing. Two abstract hooks
+(_warmup_action, _explore) cover the per-RL-family differences.
 """
 
 import dataclasses
@@ -10,6 +8,7 @@ import math
 import random
 import time
 import warnings
+from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -17,20 +16,20 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from so2_equi_rl.agents.base import Agent
+from so2_equi_rl.agents.base import ActionPair, Agent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.base import TrainConfig
 from so2_equi_rl.utils.logging import RunLogger
 
 if TYPE_CHECKING:
-    # Deferred so trainer.py imports cleanly without BulletArm + lets tests
-    # pass in env mocks. EnvWrapper pulls in helping_hands_rl_envs which has
-    # a load-time bug we patch in envs/__init__.py.
+    # Deferred so base.py imports without BulletArm and tests can pass mocks.
+    # EnvWrapper pulls in helping_hands_rl_envs which has the load-time bug
+    # we patch in envs/__init__.py.
     from so2_equi_rl.envs.wrapper import EnvWrapper
 
 
-class Trainer:
-    """Drives the train/eval/ckpt loop for any Agent subclass."""
+class BaseTrainer(ABC):
+    """Drives the train, eval, and checkpoint loop for any Agent subclass."""
 
     def __init__(
         self,
@@ -48,32 +47,48 @@ class Trainer:
         self.buffer = buffer
         self.logger = logger
 
-        # Rollout state on self so _warmup / _train_loop don't pass it around.
+        # Rollout state on self so _warmup and _train_loop don't pass it around.
         self._state: Optional[torch.Tensor] = None
         self._obs: Optional[torch.Tensor] = None
 
         self.global_step: int = 0
         self.best_success: float = -math.inf  # first eval always wins best.pt
 
+    @abstractmethod
+    def _warmup_action(self, state: torch.Tensor, obs: torch.Tensor) -> ActionPair:
+        """Action pushed into the buffer during warmup. SAC uses the
+        scripted expert; DQN will pick a random grid index.
+        """
+
+    @abstractmethod
+    def _explore(
+        self,
+        state: torch.Tensor,
+        obs: torch.Tensor,
+        global_step: int,
+    ) -> ActionPair:
+        """Action for one rollout step. global_step is exposed for DQN's
+        epsilon decay; SAC ignores it.
+        """
+
     def run(self, resume_path: Optional[Path] = None) -> None:
         try:
             if resume_path is not None:
                 self._load(resume_path)
 
-            # Fresh rollout state. On resume this drops the in-flight episode
-            # the ckpt was captured in; training resumes from a new episode.
+            # Fresh rollout state. On resume this drops the in-flight episode.
             self._state, self._obs = self.train_env.reset()
 
-            # Warmup triggers on buffer length, not global_step, so a resume
-            # whose sidecar buffer.pt is missing still refills before training.
+            # Warmup triggers on buffer length, not global_step, so a
+            # resume without a buffer sidecar still refills first.
             if len(self.buffer) < self.cfg.warmup_steps:
                 self._warmup()
 
             self._train_loop()
 
-            # Final eval + full resume bundle (last.pt policy + buffer.pt
-            # sidecar) so end-of-run artifacts always exist and a follow-up
-            # run can resume without re-warming.
+            # Final eval and full resume bundle (last.pt + buffer.pt) so
+            # end-of-run artifacts always exist and a follow-up run can
+            # resume without re-warming.
             final_metrics = self._evaluate()
             self.logger.log_scalars(
                 final_metrics, step=self.global_step, to_stdout=True
@@ -84,18 +99,16 @@ class Trainer:
             self.logger.close()
 
     def _warmup(self) -> None:
-        # Scripted-expert demos into the buffer. No updates, no eval, no
-        # global_step advance; matches Wang et al. BulletArm auto-resets
-        # on done so step.state/obs is already the next episode.
+        # Seed the buffer via _warmup_action. No updates, no eval, no
+        # global_step advance. BulletArm auto-resets on done.
         print(f"[warmup] filling buffer to {self.cfg.warmup_steps} transitions")
         while len(self.buffer) < self.cfg.warmup_steps:
-            physical = self.train_env.get_expert_action()
-            unscaled = self.agent.encode_action(physical)
-            step = self.train_env.step(physical)
+            act = self._warmup_action(self._state, self._obs)
+            step = self.train_env.step(act.physical)
             self.buffer.push(
                 self._state,
                 self._obs,
-                unscaled,
+                act.unscaled,
                 step.reward,
                 step.state,
                 step.obs,
@@ -105,8 +118,7 @@ class Trainer:
         print(f"[warmup] done, buffer size = {len(self.buffer)}")
 
     def _evaluate(self) -> Dict[str, float]:
-        # Deterministic rollouts on a separate EnvWrapper (different seed).
-        # Uses its own state/obs so training rollout progress isn't clobbered.
+        # Deterministic rollouts on a separate EnvWrapper so training rollout state isn't clobbered.
         state, obs = self.eval_env.reset()
         Be = self.eval_env.batch_size
 
@@ -121,8 +133,8 @@ class Trainer:
             ep_return += step.reward
             ep_len += 1
 
-            # Close out any episodes that just finished. BulletArm auto-resets,
-            # so the next iteration's state/obs for that slot is already fresh.
+            # Close out finished episodes. BulletArm auto-resets so the
+            # next iter's slot is already fresh.
             for i in range(Be):
                 if step.done[i].item() > 0.5:
                     returns.append(ep_return[i].item())
@@ -131,7 +143,7 @@ class Trainer:
                     ep_len[i] = 0.0
             state, obs = step.state, step.obs
 
-        # Sparse-reward close-loop tasks: return > 0 <=> task completed.
+        # Sparse rewards, so return > 0 means task completed.
         success_rate = float(np.mean([1.0 if r > 0 else 0.0 for r in returns]))
         return {
             "eval/return_mean": float(np.mean(returns)),
@@ -140,8 +152,8 @@ class Trainer:
         }
 
     def _save_policy(self, name: str) -> None:
-        # Policy-only payload so cadenced/best-eval saves stay MB-scale;
-        # the buffer lives in the buffer.pt sidecar, written at run end.
+        # Policy-only payload so cadenced and best-eval saves stay MB-scale.
+        # Buffer lives in the buffer.pt sidecar written at run end.
         payload: Dict[str, Any] = {
             "global_step": self.global_step,
             "best_success": self.best_success,
@@ -161,12 +173,11 @@ class Trainer:
         self.logger.save_checkpoint(name, payload)
 
     def _load(self, path: Path) -> None:
-        # map_location='cpu' so a checkpoint saved on a cuda box still loads
-        # on a cpu-only machine; the agent re-moves tensors to its device.
+        # map_location='cpu' so a cuda-saved ckpt loads on cpu-only too.
         payload = torch.load(path, map_location="cpu")
 
-        # Soft cfg diff: warn, don't raise. Catches lr/gamma/tau drift
-        # between resume runs without blocking intentional config changes.
+        # Soft cfg diff: warn, don't raise. Catches drift between resume
+        # runs without blocking intentional changes.
         current_cfg = dataclasses.asdict(self.cfg)
         saved_cfg = payload.get("cfg_snapshot", {})
         diffs = {
@@ -176,22 +187,22 @@ class Trainer:
         }
         if diffs:
             warnings.warn(
-                f"Trainer._load: cfg differs from checkpoint (saved vs current): {diffs}",
+                f"BaseTrainer._load: cfg differs from checkpoint (saved vs current): {diffs}",
                 stacklevel=2,
             )
 
         self.agent.load_state_dict(payload["agent"])
 
-        # Buffer sidecar. The buffer lives next to the policy file as
-        # buffer.pt; it's only written at end of run, so a resume from a
-        # cadenced ckpt (mid-run) won't find one and falls through to warmup.
+        # Buffer sidecar lives next to the policy file. It's only written
+        # at end of run, so a resume from a cadenced ckpt won't find one
+        # and falls through to warmup.
         buffer_path = Path(path).parent / "buffer.pt"
         if buffer_path.exists():
             buffer_state = torch.load(buffer_path, map_location="cpu")
             self.buffer.load_state_dict(buffer_state)
         else:
             warnings.warn(
-                f"Trainer._load: no buffer sidecar at {buffer_path}. "
+                f"BaseTrainer._load: no buffer sidecar at {buffer_path}. "
                 "Warmup will refill before training resumes.",
                 stacklevel=2,
             )
@@ -207,14 +218,13 @@ class Trainer:
         self.best_success = float(payload["best_success"])
 
     def _train_loop(self) -> None:
-        # 100-episode rolling window, matching Wang et al. (utils/logger.py:107).
-        # Warmup episodes are NOT seeded in: expert returns would inflate the
-        # early curve and hide the real policy's learning.
+        # 100-episode rolling window matches Wang et al. utils/logger.py:107.
+        # Warmup episodes aren't seeded in (expert returns would inflate the early curve).
         cfg = self.cfg
         B = self.train_env.batch_size
 
-        # The `% cadence < B` fire trick is only deterministic when B divides
-        # each cadence. Enforce up front instead of drifting silently.
+        # The `% cadence < B` fire trick is only deterministic when B
+        # divides each cadence. Enforce up front.
         for cadence_name, cadence in (
             ("log_every", cfg.log_every),
             ("eval_every", cfg.eval_every),
@@ -231,8 +241,8 @@ class Trainer:
         recent_successes: deque = deque(maxlen=100)
         loss_accum: Dict[str, list] = defaultdict(list)
 
-        # SPS window anchor. Reset on every log so SPS is the rate over the
-        # last log_every window, not since run start.
+        # SPS window anchor. Reset on every log so SPS measures the last
+        # log_every window, not since run start.
         sps_anchor_step = self.global_step
         sps_anchor_time = time.time()
 
@@ -241,14 +251,14 @@ class Trainer:
         )
 
         while self.global_step < cfg.total_steps:
-            # Env step on the current policy (exploration on).
-            act = self.agent.select_action(self._state, self._obs, deterministic=False)
+            # _explore owns the exploration decision (SAC stochastic, DQN epsilon-greedy later).
+            act = self._explore(self._state, self._obs, self.global_step)
             step = self.train_env.step(act.physical)
 
             self.buffer.push(
                 self._state,
                 self._obs,
-                act.unscaled,  # buffer stores [-1, 1], not physical
+                act.unscaled,  # buffer stores unscaled
                 step.reward,
                 step.state,
                 step.obs,
@@ -258,7 +268,7 @@ class Trainer:
             ep_return += step.reward
             ep_len += 1
 
-            # Episode bookkeeping. return > 0 <=> success on sparse tasks.
+            # Episode bookkeeping. return > 0 = success on sparse tasks.
             for i in range(B):
                 if step.done[i].item() > 0.5:
                     r = ep_return[i].item()
@@ -274,16 +284,15 @@ class Trainer:
                 for k, v in metrics.items():
                     loss_accum[k].append(v)
 
-            # Advance rollout state and step counter. Overshoot by up to B-1
-            # on the final iter is accepted; matches Wang et al. main.py:270.
+            # Up to B-1 overshoot on the final iter is fine; matches Wang et al. main.py:270.
             self._state, self._obs = step.state, step.obs
             self.global_step += B
 
-            # Cadenced logging / eval / ckpt using the `% cadence < B` trick.
+            # Cadenced log/eval/ckpt via the `% cadence < B` trick.
             if self.global_step % cfg.log_every < B:
                 now = time.time()
                 window_steps = self.global_step - sps_anchor_step
-                window_secs = max(now - sps_anchor_time, 1e-9)  # guard div-by-zero
+                window_secs = max(now - sps_anchor_time, 1e-9)
                 sps = window_steps / window_secs
 
                 log: Dict[str, float] = {
