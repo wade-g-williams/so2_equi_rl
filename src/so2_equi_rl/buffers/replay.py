@@ -51,12 +51,16 @@ class ReplayBuffer:
         seed: int = 0,
         obs_clip: float = 0.32,
         obs_scale: float = 0.4,
+        enforce_unscaled_action_range: bool = True,
     ) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be positive, got {capacity}")
         self.capacity = capacity
         self._obs_clip = float(obs_clip)
         self._obs_scale = float(obs_scale)
+        # SAC stores tanh-squashed actions in [-1, 1]; DQN stores integer
+        # grid indices cast to float32. Flip off for the latter.
+        self._enforce_unscaled_action_range = bool(enforce_unscaled_action_range)
 
         # CPU float32 everywhere except obs/next_obs (quantized uint8 in [0, 255],
         # dequantized only at sample()). Fancy-index sampling copies, so returned
@@ -130,13 +134,15 @@ class ReplayBuffer:
 
         # Invariant: stored actions are unscaled in [-1, 1]. Catches
         # physical-unit actions leaking in from the planner without going
-        # through agent.encode_action first.
-        max_abs = action_c.abs().max().item()
-        if max_abs > 1.0 + _ACTION_BOUND_TOL:
-            raise ValueError(
-                "ReplayBuffer stores unscaled actions in [-1, 1]; got "
-                f"max|a|={max_abs:.4f}. Did you forget to encode_action() before push?"
-            )
+        # through agent.encode_action first. DQN turns this off so it can
+        # store integer grid indices as float32.
+        if self._enforce_unscaled_action_range:
+            max_abs = action_c.abs().max().item()
+            if max_abs > 1.0 + _ACTION_BOUND_TOL:
+                raise ValueError(
+                    "ReplayBuffer stores unscaled actions in [-1, 1]; got "
+                    f"max|a|={max_abs:.4f}. Did you forget to encode_action() before push?"
+                )
 
         obs_c = self._quantize_obs(_as_cpu_f32(obs))
         next_obs_c = self._quantize_obs(_as_cpu_f32(next_obs))

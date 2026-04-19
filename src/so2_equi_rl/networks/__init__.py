@@ -7,6 +7,7 @@ from so2_equi_rl.networks.sac_heads import (
     EquiCritic,
     SACGaussianPolicyBase,
 )
+from so2_equi_rl.networks.dqn_heads import CNNDQNNet, EquiDQNNet
 from so2_equi_rl.networks.encoders import CNNEncoder, EquiEncoder
 
 __all__ = [
@@ -17,4 +18,6 @@ __all__ = [
     "EquiCritic",
     "CNNActor",
     "CNNCritic",
+    "EquiDQNNet",
+    "CNNDQNNet",
 ]
