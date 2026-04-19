@@ -89,7 +89,7 @@ so2_equi_rl/
 
 Compared the SO(2)-equivariant agent against plain-CNN, DrQ, RAD, and FERM baselines on three close-loop BulletArm tasks (`block_picking`, `block_pulling`, `drawer_opening`), 2 seeds each, 50k env steps.
 
-Under SAC, equivariant reaches ~0.93–0.94 final eval success on all three tasks, while every non-equivariant baseline stays near zero at the same budget. One DrQ seed on `block_pulling` is the only exception. The DQN comparison shows the same ordering on `block_pulling`.
+Under SAC, equivariant reaches ~0.93-0.94 final eval success on all three tasks, while every non-equivariant baseline stays near zero at the same budget. One DrQ seed on `block_pulling` is the only exception. The DQN comparison shows the same ordering on `block_pulling`.
 
 - Combined SAC curves: [outputs/plots/learning_curves_combined_sac.pdf](outputs/plots/learning_curves_combined_sac.pdf)
 - Combined DQN curves: [outputs/plots/learning_curves_combined_dqn.pdf](outputs/plots/learning_curves_combined_dqn.pdf)

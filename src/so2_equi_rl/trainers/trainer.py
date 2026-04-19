@@ -241,7 +241,7 @@ class Trainer:
         )
 
         while self.global_step < cfg.total_steps:
-            # --- env step on the current policy (exploration on) ---
+            # Env step on the current policy (exploration on).
             act = self.agent.select_action(self._state, self._obs, deterministic=False)
             step = self.train_env.step(act.physical)
 
@@ -267,7 +267,7 @@ class Trainer:
                     ep_return[i] = 0.0
                     ep_len[i] = 0.0
 
-            # --- gradient updates (UTD = n_updates_per_step) ---
+            # Gradient updates (UTD = n_updates_per_step).
             for _ in range(cfg.n_updates_per_step):
                 batch = self.buffer.sample(cfg.batch_size)
                 metrics = self.agent.update(batch)
@@ -279,7 +279,7 @@ class Trainer:
             self._state, self._obs = step.state, step.obs
             self.global_step += B
 
-            # --- cadenced logging / eval / ckpt using the `% cadence < B` trick ---
+            # Cadenced logging / eval / ckpt using the `% cadence < B` trick.
             if self.global_step % cfg.log_every < B:
                 now = time.time()
                 window_steps = self.global_step - sps_anchor_step

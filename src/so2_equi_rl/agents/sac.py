@@ -50,7 +50,7 @@ class SACAgent(Agent):
         self.p_high = float(cfg.p_range[1])
         self.p_span = self.p_high - self.p_low
 
-        # Actor and critic each get their own encoder; twin-Qs share one per critic (Wang et al.).
+        # Actor and critic each get their own encoder; twin-Qs share one per critic.
         enc_kwargs = {
             "obs_channels": cfg.obs_channels,
             "n_hidden": cfg.n_hidden,

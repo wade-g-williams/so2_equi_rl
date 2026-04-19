@@ -53,13 +53,9 @@ class SACGaussianPolicyBase(torch.nn.Module):
 
 
 class EquiActor(SACGaussianPolicyBase):
-    """C_N-equivariant SAC policy. (dx, dy) go through irrep(1) so they rotate
-    with the input; (p, dz, dtheta) means and all 5 log_stds are trivial_repr
-    and stay fixed.
-
-    Takes an already-constructed `EquiEncoder` as a dependency. The caller
-    (typically `SACAgent`) owns encoder lifetime so the critic cannot accidentally
-    share weights with the actor.
+    """C_N-equivariant SAC policy. (dx, dy) go through irrep(1) and rotate
+    with the input; (p, dz, dtheta) means and all 5 log_stds are trivial_repr.
+    Caller owns encoder lifetime so actor and critic can't share weights.
     """
 
     def __init__(
@@ -114,13 +110,10 @@ class EquiActor(SACGaussianPolicyBase):
 
 
 class EquiCritic(torch.nn.Module):
-    """C_N-invariant twin-Q critic. Rotating obs by g and the (dx, dy)
-    components of action by the same g leaves q1 and q2 unchanged.
-    (p, dz, dtheta) are scalars under 2D rotation and pass through.
-
-    Takes a single `EquiEncoder` shared between the two Q heads (matches
-    Wang et al.'s paper repo). The twin Qs stay decorrelated via independent
-    projection + mix layers on top of the shared backbone.
+    """C_N-invariant twin-Q critic. Rotating obs by g and (dx, dy) by the same g
+    leaves q1 and q2 unchanged; (p, dz, dtheta) are scalars and pass through.
+    One shared `EquiEncoder` drives both Q heads; independent proj + mix layers
+    on top keep the twins decorrelated.
     """
 
     def __init__(
