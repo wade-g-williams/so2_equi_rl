@@ -60,7 +60,7 @@ so2_equi_rl/
 |   |-- poster.pdf                  compiled poster
 |   `-- figures/                    plots and renders used in the poster and report
 |-- scripts/
-|   |-- train_sac.py                CLI entry point, builds everything and hands it to Trainer
+|   |-- train_sac.py                CLI entry point, builds everything and hands it to SACTrainer
 |   `-- plot_results.py             reads tfevents from outputs/ and plots learning curves
 |-- outputs/                        per-run logs, metrics, and checkpoints (gitignored except tfevents/npy/json/pdf)
 `-- src/so2_equi_rl/
@@ -78,7 +78,9 @@ so2_equi_rl/
     |   |-- encoders.py             equivariant CNN that turns the heightmap into features
     |   `-- sac_heads.py            equivariant actor + critic heads
     |-- trainers/
-    |   `-- trainer.py              agent-agnostic rollout + update + eval + checkpoint loop
+    |   |-- base.py                 agent-agnostic rollout + update + eval + checkpoint loop
+    |   |-- sac.py                  SACTrainer: expert warmup + always-stochastic exploration
+    |   `-- dqn.py                  DQNTrainer stub (variant not built yet)
     `-- utils/
         |-- logging.py              metrics, configs, checkpoints to disk
         |-- preprocessing.py        folds gripper state into the image tensor
