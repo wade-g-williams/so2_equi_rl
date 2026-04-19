@@ -219,12 +219,18 @@ class CNNActor(SACGaussianPolicyBase):
     Takes an already-constructed `CNNEncoder` as a dependency, same DI
     contract as `EquiActor` so `SACAgent` injects encoder_cls/actor_cls
     without branching on variant.
+
+    detach_encoder is a construction-time flag for FERM-SAC, where the
+    encoder is shared with the critic and should train from the TD and
+    contrastive losses only, never from actor loss. Default False leaves
+    vanilla SAC / DrQ / RAD untouched.
     """
 
     def __init__(
         self,
         encoder: CNNEncoder,
         action_dim: int = 5,
+        detach_encoder: bool = False,
     ) -> None:
         super().__init__()
 
@@ -236,6 +242,7 @@ class CNNActor(SACGaussianPolicyBase):
 
         self.encoder = encoder
         self.action_dim = action_dim
+        self.detach_encoder = detach_encoder
 
         # Parallel linear heads off the encoder's flat feature vector.
         # Matches paper's two-linear-heads structure (no hidden MLP).
@@ -245,6 +252,10 @@ class CNNActor(SACGaussianPolicyBase):
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # CNNEncoder returns (B, output_dim, 1, 1); flatten the spatial.
         encoded = self.encoder(obs)
+        # FERM: stop actor-loss gradient at the encoder boundary. The
+        # shared encoder trains from the critic + contrastive paths.
+        if self.detach_encoder:
+            encoded = encoded.detach()
         flat = encoded.view(obs.shape[0], -1)
 
         mean = self.mean_linear(flat)
@@ -292,10 +303,19 @@ class CNNCritic(torch.nn.Module):
         )
 
     def forward(
-        self, obs: torch.Tensor, action: torch.Tensor
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        detach_encoder: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # One shared encoder forward, action concatenated at MLP input.
+        # One shared encoder forward, action concatenated at the MLP
+        # input. detach_encoder is a per-call flag used by FERM-SAC in
+        # the actor step only, to stop Q-path gradient from actor_loss
+        # reaching the shared encoder. Default False preserves vanilla /
+        # DrQ / RAD, where the critic trains the encoder through TD.
         encoded = self.encoder(obs)
+        if detach_encoder:
+            encoded = encoded.detach()
         flat = encoded.view(obs.shape[0], -1)
         merged = torch.cat([flat, action], dim=1)
         q1 = self.q1_mlp(merged)
