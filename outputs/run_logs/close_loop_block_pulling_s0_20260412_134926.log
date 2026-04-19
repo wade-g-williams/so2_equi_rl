@@ -1,8 +1,0 @@
-Creating environments: close_loop_block_pulling
-/home/wadewilliams/conda_envs/equi_rl/lib/python3.7/site-packages/e2cnn/nn/modules/r2_conv/basisexpansion_singleblock.py:61: UserWarning: indexing with dtype torch.uint8 is now deprecated, please use a dtype torch.bool instead. (Triggered internally at  /pytorch/aten/src/ATen/native/IndexingUtils.h:25.)
-  sampled_basis = sampled_basis[mask, ...]
-Creating agent...
-Output dir: outputs/equi_sac_block_pulling_s0_20260412_134954
-Collected 20 demo episodes (20 successes, buffer size: 800)
-Training finished. Output: outputs/equi_sac_block_pulling_s0_20260412_134954
-pybullet build time: Mar 24 2020 20:06:54
