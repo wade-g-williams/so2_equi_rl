@@ -4,5 +4,6 @@
 
 from so2_equi_rl.agents.base import Agent
 from so2_equi_rl.agents.sac import SACAgent
+from so2_equi_rl.agents.sac_drq import SACDrQAgent
 
-__all__ = ["Agent", "SACAgent"]
+__all__ = ["Agent", "SACAgent", "SACDrQAgent"]

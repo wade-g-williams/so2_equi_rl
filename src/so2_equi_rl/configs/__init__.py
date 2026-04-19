@@ -4,5 +4,6 @@ SACConfig adds the SAC update rule's hyperparameters.
 
 from so2_equi_rl.configs.base import TrainConfig
 from so2_equi_rl.configs.sac import SACConfig
+from so2_equi_rl.configs.sac_drq import SACDrQConfig
 
-__all__ = ["TrainConfig", "SACConfig"]
+__all__ = ["TrainConfig", "SACConfig", "SACDrQConfig"]
