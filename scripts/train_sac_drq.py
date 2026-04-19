@@ -2,8 +2,18 @@
 with the DrQ config and agent.
 """
 
+# ruff: noqa: E402  (so2_equi_rl imports must come after the sys.path fix below)
+
 import argparse
+import os
+import sys
 from pathlib import Path
+
+# `python -m scripts.train_sac_drq` puts the repo root on sys.path, which
+# makes helping_hands_rl_envs resolve to the namespace dir instead of the
+# editable install. Drop it so the real package wins (see tests/conftest.py).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _REPO_ROOT]
 
 from so2_equi_rl.agents.sac_drq import SACDrQAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
