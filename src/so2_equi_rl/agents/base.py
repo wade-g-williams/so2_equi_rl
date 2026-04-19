@@ -5,6 +5,7 @@ this class, concrete agents (SAC, DQN, ...) implement them.
 from abc import ABC, abstractmethod
 from typing import Any, Dict, NamedTuple
 
+import torch
 from torch import Tensor
 
 
@@ -46,3 +47,16 @@ class Agent(ABC):
     @abstractmethod
     def load_state_dict(self, d: Dict[str, Any]) -> None:
         """Inverse of state_dict."""
+
+    @staticmethod
+    def _unalias_buffers(module: torch.nn.Module) -> None:
+        # e2cnn R2Conv caches basis-expansion index tables as stride-0 views
+        # that share storage across blocks. load_state_dict's in-place copy_
+        # refuses to write into a destination whose elements overlap in
+        # memory. Swap each non-contiguous buffer for a contiguous copy so
+        # copy_ has non-aliased memory to write.
+        for submod in module.modules():
+            for name in list(submod._buffers):
+                buf = submod._buffers[name]
+                if buf is not None and not buf.is_contiguous():
+                    submod._buffers[name] = buf.contiguous()

@@ -214,6 +214,8 @@ class SACAgent(Agent):
         }
 
     def load_state_dict(self, d: Dict[str, Any]) -> None:
+        for m in (self.actor, self.critic, self.critic_target):
+            self._unalias_buffers(m)
         self.actor.load_state_dict(d["actor"])
         self.critic.load_state_dict(d["critic"])
         self.critic_target.load_state_dict(d["critic_target"])

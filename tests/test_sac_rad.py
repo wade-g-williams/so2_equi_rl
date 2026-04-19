@@ -6,8 +6,8 @@ degenerate case (zero theta) matches vanilla SACAgent.update within
 float tolerance, and aug RNG reproducibility gives identical losses on
 two identically-seeded agents.
 
-- Finite losses + nonzero param delta on equi RAD.
-- Finite losses + nonzero param delta on CNN RAD.
+- Finite losses and nonzero param delta on equi RAD.
+- Finite losses and nonzero param delta on CNN RAD.
 - Zero theta matches SACAgent exactly.
 - Two identically-seeded agents produce identical losses on the same batch.
 """
@@ -203,7 +203,7 @@ def test_rad_degenerate_matches_sac(monkeypatch):
 
     # Tolerance is 1e-4 rather than tighter because rotate_obs at theta=0
     # is bilinear-exact only to ~2e-5 due to align_corners=False, and that
-    # drift propagates through the critic/actor forward passes.
+    # drift propagates through the critic and actor forward passes.
     for key in ("critic_loss", "actor_loss", "alpha_loss", "q1_mean", "q2_mean"):
         assert math.isclose(
             sac_losses[key], rad_losses[key], rel_tol=0.0, abs_tol=1e-4
