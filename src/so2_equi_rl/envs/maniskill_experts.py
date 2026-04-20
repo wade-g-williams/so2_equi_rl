@@ -48,10 +48,10 @@ def pick_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
     obs = wrapper._last_obs
     assert obs is not None, "reset() must run before get_expert_action"
 
-    tcp_pose = obs["extra"]["tcp_pose"]  # (B, 7) [x y z qw qx qy qz]
-    obj_pose = obs["extra"]["obj_pose"]  # (B, 7)
-    tcp_xyz = tcp_pose[:, 0:3]
-    obj_xyz = obj_pose[:, 0:3]
+    # rgbd obs_mode hides obj_pose from `extra`; read directly from the
+    # task entity so the expert works without switching obs_mode.
+    tcp_xyz = obs["extra"]["tcp_pose"][:, 0:3]
+    obj_xyz = wrapper.unwrapped.cube.pose.p
 
     xy_err = (tcp_xyz[:, 0:2] - obj_xyz[:, 0:2]).abs().max(dim=1).values  # (B,)
     above_cube = torch.stack(
@@ -81,9 +81,12 @@ def pull_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
     obs = wrapper._last_obs
     assert obs is not None, "reset() must run before get_expert_action"
 
+    # PullCube names the cube `obj` and the target `goal_region` (PickCube
+    # uses `cube`/`goal_site`). Use ManiSkill's per-task entity names here;
+    # `extra` doesn't surface these in rgbd obs_mode.
     tcp_xyz = obs["extra"]["tcp_pose"][:, 0:3]
-    obj_xyz = obs["extra"]["obj_pose"][:, 0:3]
-    goal_xyz = obs["extra"]["goal_pos"]  # (B, 3)
+    obj_xyz = wrapper.unwrapped.obj.pose.p
+    goal_xyz = wrapper.unwrapped.goal_region.pose.p
 
     # Approach point = cube position shifted opposite to the goal
     # direction, nudged down to the table surface.

@@ -4,7 +4,26 @@ from a TrainConfig so the train_*.py scripts stay backend-agnostic.
 The hhe __file__ patch lives at the top of envs/wrapper.py; importing
 this __init__ no longer forces a helping_hands_rl_envs install, which
 lets the ms3 env run these scripts without BulletArm in scope.
+
+EnvStep is the shared step-return type for both backends. It lives here
+(not in wrapper.py) so importing it from maniskill_wrapper.py does not
+drag the BulletArm-only helping_hands_rl_envs import into ms3 envs.
 """
+
+from typing import NamedTuple
+
+import torch
+
+
+class EnvStep(NamedTuple):
+    """Return shape for env.step in both backends. Positional order
+    matches the 4-tuple unpacking trainers expect: state, obs, reward, done.
+    """
+
+    state: torch.Tensor
+    obs: torch.Tensor
+    reward: torch.Tensor
+    done: torch.Tensor
 
 
 def make_env(cfg, *, seed: int, num_processes: int, num_envs: int = 1):

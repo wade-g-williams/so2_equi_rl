@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from so2_equi_rl.envs.wrapper import EnvStep
+from so2_equi_rl.envs import EnvStep
 
 # close_loop_* task id → ManiSkill env id.
 _MS3_TASK_MAP: Dict[str, str] = {
@@ -58,6 +58,7 @@ class ManiSkillWrapper:
         self.state_dim = 1
         self.obs_size = cfg.obs_size
         self.depth_max = float(cfg.ms3_depth_max)
+        self.camera_height = float(cfg.ms3_camera_height)
         self.seed = seed
 
         self._device = torch.device(
@@ -107,6 +108,12 @@ class ManiSkillWrapper:
         )
         self._last_obs: Optional[Dict[str, Any]] = None
 
+    @property
+    def unwrapped(self):
+        # Access for scripted experts that need privileged poses (e.g.
+        # cube position) which rgbd obs_mode doesn't include in `extra`.
+        return self._env.unwrapped
+
     # ------------------------------------------------------------------
     # Public API — mirrors envs/wrapper.py:EnvWrapper
     # ------------------------------------------------------------------
@@ -147,13 +154,15 @@ class ManiSkillWrapper:
     # ------------------------------------------------------------------
 
     def _extract(self, obs_dict: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Depth from the overhead camera. ManiSkill returns (N, H, W, 1);
-        # we reorder to (N, 1, H, W), clip/normalize into [0, depth_max],
-        # then move to cpu so the buffer stays device-agnostic.
+        # ManiSkill's base_camera depth is int16 millimeters from the
+        # lens. The equivariant encoder wants a heightmap above the
+        # table to match BulletArm's close-loop obs.
         depth_raw = obs_dict["sensor_data"]["base_camera"]["depth"]
-        depth = depth_raw.float().permute(0, 3, 1, 2)
-        depth = torch.clamp(depth, 0.0, self.depth_max)
-        obs = depth.cpu().reshape(self.batch_size, 1, self.obs_size, self.obs_size)
+        depth_m = depth_raw.float().permute(0, 3, 1, 2) * 0.001  # mm -> m
+        height = self.camera_height - depth_m  # depth-from-lens -> height
+        # depth_max caps far-field background noise.
+        height = torch.clamp(height, 0.0, self.depth_max)
+        obs = height.cpu().reshape(self.batch_size, 1, self.obs_size, self.obs_size)
 
         # Gripper state. Panda's gripper occupies the last qpos slots;
         # threshold the last finger (≈0.04 fully open, ≈0.0 fully closed).

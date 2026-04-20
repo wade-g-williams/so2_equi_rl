@@ -9,7 +9,7 @@ passes it straight through; [-1, 1] to physical-unit scaling lives in the agent.
 """
 
 import os
-from typing import NamedTuple, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -28,17 +28,9 @@ if _hhe.__file__ is None:
 
 from helping_hands_rl_envs import env_factory  # noqa: E402 — must follow the patch
 
-
-class EnvStep(NamedTuple):
-    """Return shape for EnvWrapper.step. Positional order matches the
-    4-tuple unpacking trainers expect: state, obs, reward, done.
-    """
-
-    state: torch.Tensor
-    obs: torch.Tensor
-    reward: torch.Tensor
-    done: torch.Tensor
-
+# Re-export so existing `from so2_equi_rl.envs.wrapper import EnvStep`
+# callers keep working.
+from so2_equi_rl.envs import EnvStep  # noqa: E402, F401
 
 # Paper's workspace.
 _DEFAULT_WORKSPACE = np.asarray(
