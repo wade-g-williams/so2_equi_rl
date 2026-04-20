@@ -11,8 +11,8 @@ net-agnostic.
 
 import torch
 import torch.nn as nn
-from e2cnn import gspaces, nn as enn
 
+from so2_equi_rl.networks._equiv_compat import enn, gspaces
 from so2_equi_rl.networks.encoders import EXPECTED_OBS_SIZE
 
 

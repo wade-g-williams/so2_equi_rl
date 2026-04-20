@@ -1,0 +1,34 @@
+# Sibling env to environment.yml. Use this one for ManiSkill runs only.
+# environment.yml stays pinned to the paper's Python 3.7 + torch 1.7 stack
+# for faithful BulletArm reproduction; ManiSkill 3 needs torch >= 2.0, so
+# the two can't coexist in one env.
+#
+# The network code handles both envs via networks/_equiv_compat.py
+# (prefers escnn here, falls back to e2cnn in the paper env).
+#
+# Create with:
+#   conda env create -f environment_ms3.yml
+#   conda activate equi_rl_ms3
+#   uv pip install -e .
+# (helping_hands_rl_envs is intentionally NOT installed here — BulletArm
+# workflows stay on the equi_rl env.)
+name: equi_rl_ms3
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch>=2.1,<2.4
+      - torchvision
+      - mani_skill>=3.0
+      - escnn
+      - numpy
+      - opencv-python
+      - tensorboard
+      - matplotlib
+      - scipy
+      - tqdm
+      - Pillow
+      - PyYAML

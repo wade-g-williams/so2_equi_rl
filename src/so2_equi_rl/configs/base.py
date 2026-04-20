@@ -11,12 +11,22 @@ from typing import Optional
 
 @dataclass
 class TrainConfig:
-    # Must be one of the close-loop tasks in envs/wrapper.py:_CLOSE_LOOP_ENVS.
+    # Env selection. env_name is the task identity (shared across backends),
+    # env_backend picks the simulator.
     env_name: str = "close_loop_block_reaching"
-    num_processes: int = 0  # 0 = SingleRunner, N = MultiRunner with N workers
+    env_backend: str = "bulletarm"  # "bulletarm" or "maniskill"
+    num_processes: int = 0  # BulletArm only: 0 = SingleRunner, N = MultiRunner
+    num_envs: int = 1  # ManiSkill only: GPU-vectorized env batch size
     seed: int = 0
     obs_size: int = 128
     max_steps: int = 50  # per-episode cap
+
+    # ManiSkill orthographic-approximation knobs; ortho keeps SO(2) equivariance.
+    ms3_camera_height: float = 1.4  # meters above workspace
+    ms3_camera_fov: float = 15.0  # degrees, smaller = closer to ortho
+    ms3_depth_max: float = 0.4  # meters, depth clip
+    ms3_control_mode: str = "pd_ee_delta_pose"
+    ms3_sim_backend: str = "gpu"
 
     # Training budget and cadence.
     total_steps: int = 50_000

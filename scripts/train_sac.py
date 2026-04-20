@@ -19,7 +19,7 @@ sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _REPO_ROOT]
 from so2_equi_rl.agents.sac import SACAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.sac import SACConfig
-from so2_equi_rl.envs.wrapper import EnvWrapper
+from so2_equi_rl.envs import make_env
 from so2_equi_rl.networks import (
     CNNActor,
     CNNCritic,
@@ -67,20 +67,14 @@ def main() -> None:
     # (network init, env, buffer). Resume restores RNG state from the ckpt.
     set_seed(cfg.seed)
 
-    train_env = EnvWrapper(
-        env_name=cfg.env_name,
-        num_processes=cfg.num_processes,
+    train_env = make_env(
+        cfg,
         seed=cfg.seed,
-        obs_size=cfg.obs_size,
-        max_steps=cfg.max_steps,
+        num_processes=cfg.num_processes,
+        num_envs=cfg.num_envs,
     )
-    eval_env = EnvWrapper(
-        env_name=cfg.env_name,
-        num_processes=0,  # eval is single-slot
-        seed=cfg.eval_seed,
-        obs_size=cfg.obs_size,
-        max_steps=cfg.max_steps,
-    )
+    # Eval is single-slot on both backends.
+    eval_env = make_env(cfg, seed=cfg.eval_seed, num_processes=0, num_envs=1)
 
     buffer = ReplayBuffer(
         capacity=cfg.buffer_capacity,

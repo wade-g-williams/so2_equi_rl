@@ -11,8 +11,8 @@ from typing import Tuple
 import torch
 import torch.nn.functional as F
 from torch.distributions import Normal
-from e2cnn import nn as enn
 
+from so2_equi_rl.networks._equiv_compat import enn
 from so2_equi_rl.networks.encoders import CNNEncoder, EquiEncoder, irrep1_multiplicity
 
 LOG_SIG_MIN = -20.0

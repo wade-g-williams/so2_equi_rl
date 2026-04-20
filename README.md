@@ -22,17 +22,28 @@ uv pip install -e helping_hands_rl_envs
 
 ## Usage
 
-Train SAC on one of the BulletArm close-loop tasks:
+Train the equivariant SAC agent on one of the BulletArm close-loop tasks:
 
 ```bash
 python scripts/train_sac.py \
+    --encoder equi \
     --env-name close_loop_block_picking \
     --total-steps 50000 \
     --seed 0 \
     --run-name equi_sac
 ```
 
-`train_sac.py` auto-registers every field on `SACConfig` as a `--kebab-case` flag, so anything in [configs/base.py](src/so2_equi_rl/configs/base.py) or [configs/sac.py](src/so2_equi_rl/configs/sac.py) is overridable from the CLI (`--gamma`, `--batch-size`, `--actor-lr`, `--group-order`, ...). Run `python scripts/train_sac.py --help` for the full list.
+Every training script auto-registers its `Config` dataclass fields as `--kebab-case` flags, so anything in [configs/base.py](src/so2_equi_rl/configs/base.py) and the per-variant config (e.g. [configs/sac.py](src/so2_equi_rl/configs/sac.py)) is CLI-overridable (`--gamma`, `--batch-size`, `--actor-lr`, `--group-order`, ...). Run any script with `--help` for the full list.
+
+Variants and their backbone flags:
+
+| Script | Agent | Backbone flag |
+| --- | --- | --- |
+| [train_sac.py](scripts/train_sac.py) | vanilla SAC | `--encoder {equi,cnn}` |
+| [train_sac_drq.py](scripts/train_sac_drq.py) | DrQ-SAC | `--encoder {equi,cnn}` |
+| [train_sac_rad.py](scripts/train_sac_rad.py) | RAD-SAC | `--encoder {equi,cnn}` (equi+RAD is an ablation) |
+| [train_sac_ferm.py](scripts/train_sac_ferm.py) | FERM-SAC | CNN-only (FERM's InfoNCE pretext is the invariance analog) |
+| [train_dqn.py](scripts/train_dqn.py) | DQN | `--network {equi,cnn,rad}` (`rad` = CNN + RAD agent) |
 
 Supported tasks (from [envs/wrapper.py](src/so2_equi_rl/envs/wrapper.py)): `close_loop_block_reaching`, `close_loop_block_picking`, `close_loop_block_pulling`, `close_loop_block_stacking`, `close_loop_block_picking_corner`, `close_loop_drawer_opening`, `close_loop_house_building_1`, `close_loop_household_picking`.
 
@@ -60,28 +71,46 @@ so2_equi_rl/
 |   |-- poster.pdf                  compiled poster
 |   `-- figures/                    plots and renders used in the poster and report
 |-- scripts/
-|   |-- train_sac.py                CLI entry point, builds everything and hands it to SACTrainer
-|   `-- plot_results.py             reads tfevents from outputs/ and plots learning curves
+|   |-- train_sac.py                vanilla SAC, --encoder {equi,cnn}
+|   |-- train_sac_drq.py            DrQ-SAC, --encoder {equi,cnn}
+|   |-- train_sac_rad.py            RAD-SAC, --encoder {equi,cnn}
+|   |-- train_sac_ferm.py           FERM-SAC, CNN-only
+|   |-- train_dqn.py                DQN, --network {equi,cnn,rad}
+|   |-- plot_results.py             reads tfevents from outputs/ and plots learning curves
+|   `-- render_env_panel.py         renders the 1x3 BulletArm panel for the poster
 |-- outputs/                        per-run logs, metrics, and checkpoints (gitignored except tfevents/npy/json/pdf)
 `-- src/so2_equi_rl/
     |-- agents/
     |   |-- base.py                 agent interface (act, update, save/load)
-    |   `-- sac.py                  SAC: actor + critic updates, entropy tuning
+    |   |-- sac.py                  vanilla SAC: actor + critic updates, entropy tuning
+    |   |-- sac_drq.py              DrQ-SAC: K/M augmented targets and Q regression
+    |   |-- sac_rad.py              RAD-SAC: one shared SO(2) rotation per transition
+    |   |-- sac_ferm.py             FERM-SAC: InfoNCE pretext + SAC fine-tune, CNN-only
+    |   |-- dqn.py                  vanilla DQN: eps-greedy, target net, Huber loss
+    |   `-- dqn_rad.py              RAD-DQN: same as dqn with per-transition rotation
     |-- buffers/
     |   `-- replay.py               fixed-capacity replay buffer, uniform-sampled batches
     |-- configs/
     |   |-- base.py                 shared training settings (env, seed, steps, device, out dir)
-    |   `-- sac.py                  SAC hyperparameters (lrs, gamma, tau, batch size, ...)
+    |   |-- sac.py                  vanilla SAC hyperparameters
+    |   |-- sac_drq.py              DrQ-SAC hyperparameters (adds K, M)
+    |   |-- sac_rad.py              RAD-SAC hyperparameters
+    |   |-- sac_ferm.py             FERM-SAC hyperparameters (pretext batch, InfoNCE temperature)
+    |   |-- dqn.py                  DQN hyperparameters (eps schedule, target sync)
+    |   `-- dqn_rad.py              RAD-DQN hyperparameters
     |-- envs/
     |   `-- wrapper.py              wraps BulletArm to return batched torch tensors
     |-- networks/
-    |   |-- encoders.py             equivariant CNN that turns the heightmap into features
-    |   `-- sac_heads.py            equivariant actor + critic heads
+    |   |-- encoders.py             equivariant and plain-CNN encoders (heightmap -> features)
+    |   |-- sac_heads.py            equivariant and plain-CNN actor + critic heads
+    |   `-- dqn_heads.py            equivariant and plain-CNN discrete Q-heads
     |-- trainers/
     |   |-- base.py                 agent-agnostic rollout + update + eval + checkpoint loop
     |   |-- sac.py                  SACTrainer: expert warmup + always-stochastic exploration
-    |   `-- dqn.py                  DQNTrainer stub (variant not built yet)
+    |   `-- dqn.py                  DQNTrainer: eps-greedy rollout + target-net sync
     `-- utils/
+        |-- augmentation.py         SO(2) rotation augmentations shared by DrQ/RAD/FERM
+        |-- cli_args.py             dataclass <-> argparse bridge (auto-register --kebab-case flags)
         |-- logging.py              metrics, configs, checkpoints to disk
         |-- preprocessing.py        folds gripper state into the image tensor
         `-- seeding.py              seeds every RNG for reproducibility

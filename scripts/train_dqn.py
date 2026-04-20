@@ -21,7 +21,7 @@ from so2_equi_rl.agents.dqn_rad import DQNRADAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.dqn import DQNConfig
 from so2_equi_rl.configs.dqn_rad import DQNRADConfig
-from so2_equi_rl.envs.wrapper import EnvWrapper
+from so2_equi_rl.envs import make_env
 from so2_equi_rl.networks import CNNDQNNet, EquiDQNNet
 from so2_equi_rl.trainers import DQNTrainer
 from so2_equi_rl.utils import set_seed
@@ -72,20 +72,14 @@ def main() -> None:
     # Seed before constructing anything that draws from the global torch RNG.
     set_seed(cfg.seed)
 
-    train_env = EnvWrapper(
-        env_name=cfg.env_name,
-        num_processes=cfg.num_processes,
+    train_env = make_env(
+        cfg,
         seed=cfg.seed,
-        obs_size=cfg.obs_size,
-        max_steps=cfg.max_steps,
+        num_processes=cfg.num_processes,
+        num_envs=cfg.num_envs,
     )
-    eval_env = EnvWrapper(
-        env_name=cfg.env_name,
-        num_processes=0,  # eval is single-slot
-        seed=cfg.eval_seed,
-        obs_size=cfg.obs_size,
-        max_steps=cfg.max_steps,
-    )
+    # Eval is single-slot on both backends.
+    eval_env = make_env(cfg, seed=cfg.eval_seed, num_processes=0, num_envs=1)
 
     # DQN stores integer grid indices (cast to float32), not [-1, 1] actions,
     # so the buffer's range guard has to be off.

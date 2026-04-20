@@ -8,14 +8,25 @@ No action decoding here. The agent hands in a 5-D tensor and the wrapper
 passes it straight through; [-1, 1] to physical-unit scaling lives in the agent.
 """
 
+import os
 from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 import torch
 
-# The helping_hands_rl_envs __file__ patch lives in so2_equi_rl.envs.__init__
-# so it fires on any entry into the envs package, not just this module.
-from helping_hands_rl_envs import env_factory
+# helping_hands_rl_envs ships an empty __init__, so __file__ is None and
+# random_object.py crashes on os.path.dirname(hhe.__file__). Patch it here
+# so ms3-only workflows that skip wrapper.py don't need hhe installed.
+import helping_hands_rl_envs as _hhe
+
+if _hhe.__file__ is None:
+    # __path__ points at the namespace-package root; the real package with
+    # simulators/urdf assets lives one level deeper.
+    _hhe.__file__ = os.path.join(
+        list(_hhe.__path__)[0], "helping_hands_rl_envs", "__init__.py"
+    )
+
+from helping_hands_rl_envs import env_factory  # noqa: E402 — must follow the patch
 
 
 class EnvStep(NamedTuple):
@@ -135,16 +146,6 @@ class EnvWrapper:
         return self._to_batched_obs(states, obs)
 
     def step(self, actions: torch.Tensor) -> EnvStep:
-        if not torch.is_tensor(actions):
-            raise TypeError(
-                f"actions must be a torch tensor, got {type(actions).__name__}"
-            )
-        expected_shape = (self.batch_size, self.action_dim)
-        if tuple(actions.shape) != expected_shape:
-            raise ValueError(
-                f"expected action shape {expected_shape}, got {tuple(actions.shape)}"
-            )
-
         actions_np = actions.detach().cpu().numpy()
         if actions_np.dtype != np.float32:
             actions_np = actions_np.astype(np.float32)

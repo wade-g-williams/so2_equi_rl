@@ -3,7 +3,8 @@ plain CNN baseline. Default C_8 matches the paper.
 """
 
 import torch
-from e2cnn import gspaces, nn as enn
+
+from so2_equi_rl.networks._equiv_compat import enn, gspaces
 
 # The block stack reduces 128 spatial down to 1 exactly. Other sizes
 # silently break the .view(B, -1) flatten in the actor and critic heads.
