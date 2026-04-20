@@ -17,8 +17,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _REPO_ROOT]
 
 from so2_equi_rl.agents.dqn import DQNAgent
+from so2_equi_rl.agents.dqn_rad import DQNRADAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.dqn import DQNConfig
+from so2_equi_rl.configs.dqn_rad import DQNRADConfig
 from so2_equi_rl.envs.wrapper import EnvWrapper
 from so2_equi_rl.networks import CNNDQNNet, EquiDQNNet
 from so2_equi_rl.trainers import DQNTrainer
@@ -26,16 +28,27 @@ from so2_equi_rl.utils import set_seed
 from so2_equi_rl.utils.cli_args import add_dataclass_args, extract_dataclass_kwargs
 from so2_equi_rl.utils.logging import RunLogger
 
-# Maps --network to the Q-net class DQNAgent's DI ctor expects.
-_Q_VARIANTS = {
-    "equi": EquiDQNNet,
-    "cnn": CNNDQNNet,
+# Maps --network to (agent_cls, net_cls, cfg_cls). rad swaps in the
+# RAD agent and config; equi/cnn use vanilla DQN.
+_VARIANTS = {
+    "equi": (DQNAgent, EquiDQNNet, DQNConfig),
+    "cnn": (DQNAgent, CNNDQNNet, DQNConfig),
+    "rad": (DQNRADAgent, CNNDQNNet, DQNRADConfig),
 }
 
 
 def main() -> None:
+    # Two-pass argparse. The cfg_cls depends on --network, so peek at it
+    # first, then register the selected dataclass's fields on the parser.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument(
+        "--network", type=str, default="equi", choices=sorted(_VARIANTS.keys())
+    )
+    pre_args, _ = pre_parser.parse_known_args()
+    agent_cls, net_cls, cfg_cls = _VARIANTS[pre_args.network]
+
     parser = argparse.ArgumentParser(description="Train DQN on so2_equi_rl")
-    add_dataclass_args(parser, DQNConfig)
+    add_dataclass_args(parser, cfg_cls)
     parser.add_argument(
         "--run-name", type=str, default=None, help="suffix appended to the run dir"
     )
@@ -49,12 +62,12 @@ def main() -> None:
         "--network",
         type=str,
         default="equi",
-        choices=sorted(_Q_VARIANTS.keys()),
+        choices=sorted(_VARIANTS.keys()),
         help="Q-net variant (default: equi)",
     )
     args = parser.parse_args()
 
-    cfg = DQNConfig(**extract_dataclass_kwargs(args, DQNConfig))
+    cfg = cfg_cls(**extract_dataclass_kwargs(args, cfg_cls))
 
     # Seed before constructing anything that draws from the global torch RNG.
     set_seed(cfg.seed)
@@ -85,8 +98,7 @@ def main() -> None:
         enforce_unscaled_action_range=False,
     )
 
-    net_cls = _Q_VARIANTS[args.network]
-    agent = DQNAgent(cfg, net_cls=net_cls)
+    agent = agent_cls(cfg, net_cls=net_cls)
 
     logger = RunLogger(cfg, run_name=args.run_name)
     print(f"[train_dqn] run dir: {logger.run_dir}")
