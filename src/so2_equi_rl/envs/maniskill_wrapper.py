@@ -21,11 +21,109 @@ from so2_equi_rl.envs import EnvStep
 # task, not a tabletop one.
 _SUPPORTED_MS3_TASKS = {"PickCube-v1", "PullCube-v1", "StackCube-v1"}
 
+# User-facing env name -> internal arm-hidden variant. The variant is
+# registered the first time ManiSkillWrapper is constructed and shares
+# task logic with the base class via a mixin that hides arm links inside
+# _load_scene. Has to happen there (not after gym.make) because MS3's
+# batched render system locks the scene once it's built.
+_TASK_TO_EQUI = {
+    "PickCube-v1": "EquiPickCube-v1",
+    "PullCube-v1": "EquiPullCube-v1",
+    "StackCube-v1": "EquiStackCube-v1",
+}
+
+_equi_tasks_registered = False
+
 
 # ManiSkill's default pd_ee_delta_pose bounds. We rescale the agent's
 # physical action into the [-1, 1] cube these bounds describe.
 _MS3_POS_BOUND = 0.1  # meters, matches pd_ee_delta_pose default
 _MS3_ROT_BOUND = 0.1  # radians, matches pd_ee_delta_pose default
+
+# Panda arm and hand links to hide from the sensor camera. Fingers stay
+# visible so the heightmap still shows the grasp. Without this, the arm
+# enters the workspace as a direction-dependent feature and breaks the
+# SO(2) symmetry the Equi encoder relies on.
+_PANDA_HIDDEN_LINKS = (
+    "panda_link0",
+    "panda_link1",
+    "panda_link2",
+    "panda_link3",
+    "panda_link4",
+    "panda_link5",
+    "panda_link6",
+    "panda_link7",
+    "panda_hand",
+)
+
+
+def _register_equi_tasks() -> None:
+    # Register EquiPickCube-v1, EquiPullCube-v1, EquiStackCube-v1. Each
+    # subclasses the matching base task and, inside _load_scene, walks the
+    # Panda articulation and drops visibility to 0 on every RenderBody
+    # belonging to a link in _PANDA_HIDDEN_LINKS. Physics components ignore
+    # the attribute, so collisions and grasping still work.
+    global _equi_tasks_registered
+    if _equi_tasks_registered:
+        return
+
+    from mani_skill.envs.tasks.tabletop.pick_cube import PickCubeEnv
+    from mani_skill.envs.tasks.tabletop.pull_cube import PullCubeEnv
+    from mani_skill.envs.tasks.tabletop.stack_cube import StackCubeEnv
+    from mani_skill.utils.registration import register_env
+
+    from mani_skill.sensors.camera import CameraConfig
+    from mani_skill.utils import sapien_utils
+
+    class _EquiTaskMixin:
+        # Overhead fixed camera at 1 m, 60 deg FOV, 128x128. Matches Joey's
+        # eq_sac maniskill branch. Replaces every default sensor camera with
+        # this single top-down rig, so obs["sensor_data"] only carries
+        # "overhead_camera".
+        @property
+        def _default_sensor_configs(self):
+
+            pose = sapien_utils.look_at(eye=[0.0, 0.0, 1.0], target=[0.0, 0.0, 0.0])
+            return [
+                CameraConfig(
+                    uid="overhead_camera",
+                    pose=pose,
+                    width=128,
+                    height=128,
+                    fov=float(np.pi / 3),
+                    near=0.01,
+                    far=2.0,
+                )
+            ]
+
+        def _load_scene(self, options):
+            super()._load_scene(options)
+            robot = self.agent.robot
+            links_map = getattr(robot, "links_map", None)
+            if links_map is None:
+                return
+            for link_name in _PANDA_HIDDEN_LINKS:
+                link = links_map.get(link_name)
+                if link is None:
+                    continue
+                for obj in link._objs:
+                    for comp in obj.entity.components:
+                        if hasattr(comp, "visibility"):
+                            comp.visibility = 0.0
+
+    @register_env("EquiPickCube-v1", max_episode_steps=50)
+    class EquiPickCubeEnv(_EquiTaskMixin, PickCubeEnv):
+        pass
+
+    @register_env("EquiPullCube-v1", max_episode_steps=50)
+    class EquiPullCubeEnv(_EquiTaskMixin, PullCubeEnv):
+        pass
+
+    @register_env("EquiStackCube-v1", max_episode_steps=50)
+    class EquiStackCubeEnv(_EquiTaskMixin, StackCubeEnv):
+        pass
+
+    _equi_tasks_registered = True
 
 
 class ManiSkillWrapper:
@@ -41,7 +139,6 @@ class ManiSkillWrapper:
         # Lazy-imported so environments without ManiSkill still import the package.
         import gymnasium as gym
         import mani_skill.envs  # noqa: F401, registers ManiSkill envs
-        from mani_skill.utils import sapien_utils
         from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
         if cfg.env_name not in _SUPPORTED_MS3_TASKS:
@@ -49,6 +146,12 @@ class ManiSkillWrapper:
                 f"env_name={cfg.env_name!r} is not a supported ManiSkill task. "
                 f"Available: {sorted(_SUPPORTED_MS3_TASKS)}"
             )
+
+        # Register arm-hidden subclasses on first use and remap env_name to
+        # the Equi variant so gym.make builds the scene with arm visibility
+        # dropped during _load_scene, before the batched render system locks.
+        _register_equi_tasks()
+        equi_env_name = _TASK_TO_EQUI[cfg.env_name]
 
         self.env_name = cfg.env_name
         self.num_envs = num_envs
@@ -67,34 +170,16 @@ class ManiSkillWrapper:
             expert_fn  # set later via set_expert; allows task-specific wiring
         )
 
-        # Build a top-down camera pose. look_at returns a sapien Pose; we
-        # flatten into the [x, y, z, qw, qx, qy, qz] list sensor_configs
-        # expects to serialize.
-        pose = sapien_utils.look_at(
-            eye=[0.0, 0.0, float(cfg.ms3_camera_height)],
-            target=[0.0, 0.0, 0.0],
-        )
-        pose_list = pose.p.flatten().tolist() + pose.q.flatten().tolist()
-
-        # gym.make builds the task, sensor_configs override the default
-        # camera named base_camera with our top-down rig.
+        # gym.make builds the arm-hidden Equi variant. The overhead camera
+        # is defined by the mixin's _default_sensor_configs (1 m, 60 deg,
+        # 128x128), so sensor_configs isn't needed here.
         base_env = gym.make(
-            cfg.env_name,
+            equi_env_name,
             num_envs=num_envs,
-            obs_mode="rgbd",
+            obs_mode="depth",
             reward_mode=cfg.ms3_reward_mode,
             control_mode=cfg.ms3_control_mode,
             sim_backend=cfg.ms3_sim_backend,
-            sensor_configs=dict(
-                base_camera=dict(
-                    pose=pose_list,
-                    width=self.obs_size,
-                    height=self.obs_size,
-                    fov=float(np.deg2rad(cfg.ms3_camera_fov)),
-                    near=0.01,
-                    far=float(cfg.ms3_camera_height) + 0.5,
-                ),
-            ),
         )
 
         # Gymnasium's default TimeLimit returns truncated=True forever
@@ -160,22 +245,35 @@ class ManiSkillWrapper:
     # Internals.
 
     def _extract(self, obs_dict: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
-        # ManiSkill's base_camera depth is int16 millimeters from the
-        # lens. The equivariant encoder wants a heightmap above the
-        # table to match BulletArm's close-loop obs.
-        depth_raw = obs_dict["sensor_data"]["base_camera"]["depth"]
-        depth_m = depth_raw.float().permute(0, 3, 1, 2) * 0.001  # mm -> m
-        height = self.camera_height - depth_m  # depth-from-lens -> height
-        # depth_max caps far-field background noise.
-        height = torch.clamp(height, 0.0, self.depth_max)
-        obs = height.cpu().reshape(self.batch_size, 1, self.obs_size, self.obs_size)
+        # Joey's EquivariantDepthObsWrapper from eq_sac maniskill:
+        # depth is TCP-z relative (gripper-centered), clamped symmetrically.
+        # Holding channel comes from finger_width = qpos[-2] + qpos[-1].
+        depth_raw = obs_dict["sensor_data"]["overhead_camera"]["depth"]
+        depth_m = depth_raw.float() * 0.001  # (B, H, W, 1) mm -> m
+        depth_m = depth_m.squeeze(-1)  # (B, H, W)
 
-        # Gripper state. Panda's gripper occupies the last qpos slots;
-        # threshold the last finger (~0.04 fully open, ~0.0 fully closed).
+        # Gripper z from privileged TCP pose; fall back to 0 if missing.
+        extra = obs_dict.get("extra", {})
+        if "tcp_pose" in extra:
+            gripper_z = extra["tcp_pose"][:, 2:3]  # (B, 1)
+        else:
+            gripper_z = torch.zeros(depth_m.shape[0], 1, device=depth_m.device)
+
+        depth_rel = depth_m - gripper_z.unsqueeze(-1)  # (B, H, W)
+        depth_rel = torch.nan_to_num(depth_rel, nan=0.0, posinf=0.0, neginf=0.0)
+        depth_rel = depth_rel.clamp(-self.depth_max, self.depth_max)
+        obs = (
+            depth_rel.unsqueeze(1)
+            .cpu()
+            .reshape(self.batch_size, 1, self.obs_size, self.obs_size)
+        )
+
+        # Binary holding indicator. Sum of both finger qpos; < 0.04 m means
+        # the gripper has closed on something (Joey's threshold).
         qpos = obs_dict["agent"]["qpos"]
-        gripper_pos = qpos[:, -1]
+        finger_width = qpos[:, -2] + qpos[:, -1]
         state = (
-            (gripper_pos < 0.02).float().cpu().reshape(self.batch_size, self.state_dim)
+            (finger_width < 0.04).float().cpu().reshape(self.batch_size, self.state_dim)
         )
         return state, obs
 

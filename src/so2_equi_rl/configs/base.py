@@ -21,10 +21,11 @@ class TrainConfig:
     obs_size: int = 128
     max_steps: int = 50  # per-episode cap
 
-    # ManiSkill orthographic-approximation knobs; ortho keeps SO(2) equivariance.
-    ms3_camera_height: float = 1.4  # meters above workspace
-    ms3_camera_fov: float = 15.0  # degrees, smaller = closer to ortho
-    ms3_depth_max: float = 0.4  # meters, depth clip
+    # ManiSkill overhead camera knobs. Matches Joey's eq_sac maniskill branch:
+    # 1 m camera, 60 deg FOV, symmetric gripper-relative depth clamp.
+    ms3_camera_height: float = 1.0  # meters above workspace
+    ms3_camera_fov: float = 60.0  # degrees, wide enough to cover ~1.15 m at 1 m
+    ms3_depth_max: float = 2.0  # meters, symmetric clamp on gripper-relative depth
     ms3_control_mode: str = "pd_ee_delta_pose"
     ms3_sim_backend: str = "gpu"
     # MS3 reward mode. Defaults to 'normalized_dense' (MS3's own default),
@@ -33,19 +34,23 @@ class TrainConfig:
     # on success only, matches the paper's BulletArm regime), 'none'.
     ms3_reward_mode: str = "normalized_dense"
 
-    # Training budget and cadence.
-    total_steps: int = 50_000
-    warmup_steps: int = 1_000  # random/expert collection before learning starts
+    # Training budget and cadence. total_steps counts UPDATE iterations
+    # (gradient steps), matching paper repo's max_train_step and the x-axis
+    # of paper Figures 6/7/8. 20000 is paper's spec for both DQN and SAC.
+    total_steps: int = 20_000
+    warmup_steps: int = 1_000  # kept for backward compat, superseded by warmup_episodes
+    # Paper Appendix F: SAC warmup is 20 episodes, DQN is 100 episodes.
+    warmup_episodes: int = 20
     batch_size: int = 64
     buffer_capacity: int = 100_000
 
-    # Cadences in env steps. All multiples of 160 (LCM of likely batch
-    # sizes: BulletArm num_processes 1/5, MS3 num_envs 8/16/32). The
-    # trainer enforces cadence % batch_size == 0, so these must stay
-    # divisible by whatever batch size the env ends up with.
-    log_every: int = 160
-    eval_every: int = 4_800
-    ckpt_every: int = 9_600
+    # Cadences in update count (matching paper repo main.py). Trainer enforces
+    # cadence % n_updates_per_step == 0, which is trivially true for UTD=1.
+    log_every: int = 32
+    eval_every: int = (
+        500  # paper spec (Fig 6/7/8: "evaluation every 500 training steps")
+    )
+    ckpt_every: int = 2_000
 
     # Eval rollouts use a separate EnvWrapper seeded from eval_seed so they
     # don't perturb the training env's RNG.
