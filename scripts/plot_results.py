@@ -57,12 +57,14 @@ VARIANT_COLOR = {
 
 # BulletArm tasks are named close_loop_<task>; MS3 is keyed by ms3_task.
 TASK_ORDER_BULLETARM = ["block_picking", "block_pulling", "drawer_opening"]
-TASK_ORDER_MANISKILL = ["pickcube_v1"]
+TASK_ORDER_MANISKILL = ["pickcube_v1", "pullcube_v1", "stackcube_v1"]
 TASK_LABEL = {
     "block_picking": "Block Picking",
     "block_pulling": "Block Pulling",
     "drawer_opening": "Drawer Opening",
     "pickcube_v1": "PickCube-v1",
+    "pullcube_v1": "PullCube-v1",
+    "stackcube_v1": "StackCube-v1",
 }
 
 BACKEND_LABEL = {"bulletarm": "BulletArm", "maniskill": "ManiSkill3"}

@@ -15,14 +15,12 @@ import torch
 
 from so2_equi_rl.envs import EnvStep
 
-# close_loop_* task id → ManiSkill env id. drawer_opening pairs with
-# StackCube-v1 because ManiSkill's OpenCabinetDrawer-v1 is mobile-base
-# (Fetch), not tabletop. StackCube keeps the Panda arm + top-down camera.
-_MS3_TASK_MAP: Dict[str, str] = {
-    "close_loop_block_picking": "PickCube-v1",
-    "close_loop_block_pulling": "PullCube-v1",
-    "close_loop_drawer_opening": "StackCube-v1",
-}
+# Supported ManiSkill tasks for the paper-reproduction extension. PickCube
+# and PullCube are direct analogues of BulletArm's block_picking and
+# block_pulling. StackCube stands in for drawer_opening because
+# ManiSkill's OpenCabinetDrawer-v1 is a Fetch-based mobile-manipulation
+# task, not a tabletop one.
+_SUPPORTED_MS3_TASKS = {"PickCube-v1", "PullCube-v1", "StackCube-v1"}
 
 
 # ManiSkill's default pd_ee_delta_pose bounds. We rescale the agent's
@@ -47,10 +45,10 @@ class ManiSkillWrapper:
         from mani_skill.utils import sapien_utils
         from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-        if cfg.env_name not in _MS3_TASK_MAP:
+        if cfg.env_name not in _SUPPORTED_MS3_TASKS:
             raise NotImplementedError(
-                f"env_name={cfg.env_name!r} has no ManiSkill mapping yet. "
-                f"Available: {sorted(_MS3_TASK_MAP)}"
+                f"env_name={cfg.env_name!r} is not a supported ManiSkill task. "
+                f"Available: {sorted(_SUPPORTED_MS3_TASKS)}"
             )
 
         self.env_name = cfg.env_name
@@ -82,7 +80,7 @@ class ManiSkillWrapper:
         # gym.make builds the task, sensor_configs override the default
         # camera named base_camera with our top-down rig.
         base_env = gym.make(
-            _MS3_TASK_MAP[cfg.env_name],
+            cfg.env_name,
             num_envs=num_envs,
             obs_mode="rgbd",
             control_mode=cfg.ms3_control_mode,

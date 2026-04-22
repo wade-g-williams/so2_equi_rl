@@ -1,6 +1,6 @@
 # so2_equi_rl
 
-Reimplementation of Wang et al., *SO(2)-Equivariant Reinforcement Learning* (ICLR 2022), on the three close-loop BulletArm tasks from the paper, plus a ManiSkill3 PickCube-v1 extension. CS 5180 final project, Spring 2026.
+Reimplementation of Wang et al., *SO(2)-Equivariant Reinforcement Learning* (ICLR 2022), on the three close-loop BulletArm tasks from the paper, plus a ManiSkill3 extension covering PickCube-v1, PullCube-v1, and StackCube-v1. CS 5180 final project, Spring 2026.
 
 ## Setup
 
@@ -28,7 +28,7 @@ git apply ../patches/helping_hands_auto_reset.patch
 cd ..
 ```
 
-ManiSkill3 env, only needed for the PickCube-v1 extension:
+ManiSkill3 env, only needed for the MS3 extension tasks:
 
 ```bash
 conda env create -f environment_ms3.yml
@@ -65,7 +65,12 @@ Paper scope is three close-loop BulletArm tasks plus the ManiSkill3 extension:
 - `close_loop_block_picking`
 - `close_loop_block_pulling`
 - `close_loop_drawer_opening`
-- `PickCube-v1` (run with `--env-backend maniskill` in the `ms3_equi` env)
+
+And the ManiSkill3 extension (run with `--env-backend maniskill` in the `ms3_equi` env):
+
+- `PickCube-v1` (MS3 analogue of block_picking)
+- `PullCube-v1` (MS3 analogue of block_pulling)
+- `StackCube-v1` (stands in for drawer_opening, since MS3's OpenCabinetDrawer-v1 is a Fetch mobile-manipulation task, not tabletop)
 
 The BulletArm wrapper can run more tasks than these, see [envs/wrapper.py](src/so2_equi_rl/envs/wrapper.py). Reproduction sticks to the paper's three.
 
@@ -151,7 +156,7 @@ so2_equi_rl/
 
 ## Results
 
-Paper reproduction runs Fig 6 (DQN plus DrQ, RAD, CURL) and Fig 7 (SAC plus DrQ, RAD, FERM) on the three close-loop BulletArm tasks, 2 seeds each, 20k env steps. The ManiSkill3 extension runs the same variants on PickCube-v1 under the same budget.
+Paper reproduction runs Fig 6 (DQN plus DrQ, RAD, CURL) and Fig 7 (SAC plus DrQ, RAD, FERM) on the three close-loop BulletArm tasks, 2 seeds each, 20k env steps. The ManiSkill3 extension runs the same variants on PickCube-v1, PullCube-v1, and StackCube-v1 under the same budget.
 
 - Fig 6 BulletArm, [outputs/plots/figure6_dqn_bulletarm.pdf](outputs/plots/figure6_dqn_bulletarm.pdf)
 - Fig 7 BulletArm, [outputs/plots/figure7_sac_bulletarm.pdf](outputs/plots/figure7_sac_bulletarm.pdf)

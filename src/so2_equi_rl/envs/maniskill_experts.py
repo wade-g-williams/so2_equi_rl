@@ -162,11 +162,12 @@ def stack_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
     return _pack(dxyz, gripper_p)
 
 
-# close_loop_* task id → expert function.
+# MS3 task id -> scripted expert. Names match envs/maniskill_wrapper.py's
+# _SUPPORTED_MS3_TASKS so the envs/__init__ dispatch finds them directly.
 EXPERTS: Dict[str, Callable[["ManiSkillWrapper"], torch.Tensor]] = {
-    "close_loop_block_picking": pick_cube_expert,
-    "close_loop_block_pulling": pull_cube_expert,
-    "close_loop_drawer_opening": stack_cube_expert,
+    "PickCube-v1": pick_cube_expert,
+    "PullCube-v1": pull_cube_expert,
+    "StackCube-v1": stack_cube_expert,
 }
 
 
