@@ -43,7 +43,13 @@ def _git_info(repo_root: Path) -> str:
 class RunLogger:
     """Timestamped run directory, metric sink, and checkpoint saver."""
 
-    def __init__(self, cfg: TrainConfig, run_name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        cfg: TrainConfig,
+        run_name: Optional[str] = None,
+        alg_family: Optional[str] = None,
+        alg_variant: Optional[str] = None,
+    ) -> None:
         # Timestamp first so `ls outputs/` sorts chronologically.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         parts = [stamp, cfg.env_name]
@@ -54,10 +60,18 @@ class RunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.ckpt_dir.mkdir(exist_ok=True)
 
-        # Provenance, written once at construction.
+        # Provenance, written once at construction. alg_family/alg_variant
+        # are not dataclass fields (they live on the CLI arg, not the cfg)
+        # but plot_results.py needs them to identify a run's (family, variant)
+        # without parsing the run-name convention. Merged into the yaml dump.
+        cfg_dict = dataclasses.asdict(cfg)
+        if alg_family is not None:
+            cfg_dict["alg_family"] = alg_family
+        if alg_variant is not None:
+            cfg_dict["alg_variant"] = alg_variant
         cfg_path = self.run_dir / "config.yaml"
         with cfg_path.open("w") as f:
-            yaml.safe_dump(dataclasses.asdict(cfg), f, sort_keys=False)
+            yaml.safe_dump(cfg_dict, f, sort_keys=False)
         (self.run_dir / "git.txt").write_text(_git_info(Path.cwd()) + "\n")
 
         # TB for live curves, JSONL for offline diffing. JSONL is

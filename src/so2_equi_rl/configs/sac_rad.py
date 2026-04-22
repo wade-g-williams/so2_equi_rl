@@ -1,24 +1,16 @@
-"""RAD-SAC config. Adds the two RAD aug knobs on top of SACConfig.
-
-Paper's sac_rad.py doesn't hardcode aug_type, so rad_aug_mode is a free
-field. Default 'continuous' matches the paper's so2 RAD baseline.
+"""RAD-SAC config. Paper §E: "RAD Crop baselines use random crop for data
+augmentation. The random crop crops a 142x142 state image to the size of
+128x128." Our heightmaps are already rendered at 128x128, so we pad to
+142 (pad=7) then random-crop back to 128, giving the same effective op.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from so2_equi_rl.configs.sac import SACConfig
 
 
 @dataclass
 class SACRADConfig(SACConfig):
-    # 'continuous' matches the paper's so2 RAD baseline. 'discrete_cN'
-    # runs RAD over the C_N lattice instead.
-    rad_aug_mode: str = "continuous"
-
-    # None resolves to cfg.group_order in __post_init__. Unused in continuous mode.
-    rad_group_order: Optional[int] = None
-
-    def __post_init__(self) -> None:
-        if self.rad_group_order is None:
-            self.rad_group_order = self.group_order
+    # Paper pads by 7 pixels (128 -> 142 -> crop 128) = ±7 pixel shift.
+    # Matches Laskin et al. 2020a and Wang et al. 2022 §E.
+    rad_pad: int = 7

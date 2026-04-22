@@ -15,11 +15,13 @@ import torch
 
 from so2_equi_rl.envs import EnvStep
 
-# close_loop_* task id → ManiSkill env id.
+# close_loop_* task id → ManiSkill env id. drawer_opening pairs with
+# StackCube-v1 because ManiSkill's OpenCabinetDrawer-v1 is mobile-base
+# (Fetch), not tabletop. StackCube keeps the Panda arm + top-down camera.
 _MS3_TASK_MAP: Dict[str, str] = {
     "close_loop_block_picking": "PickCube-v1",
     "close_loop_block_pulling": "PullCube-v1",
-    # "close_loop_drawer_opening": "DrawerOpeningCustom-v0",  # TODO
+    "close_loop_drawer_opening": "StackCube-v1",
 }
 
 
@@ -115,7 +117,7 @@ class ManiSkillWrapper:
         return self._env.unwrapped
 
     # ------------------------------------------------------------------
-    # Public API — mirrors envs/wrapper.py:EnvWrapper
+    # Public API, mirrors envs/wrapper.py:EnvWrapper
     # ------------------------------------------------------------------
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -119,34 +119,41 @@ class BaseTrainer(ABC):
 
     def _evaluate(self) -> Dict[str, float]:
         # Deterministic rollouts on a separate EnvWrapper so training rollout state isn't clobbered.
+        # Paper (Wang et al. ICLR 2022) y-axis is *discounted* eval return, so
+        # we keep the per-env reward trace and fold it with γ on episode end.
         state, obs = self.eval_env.reset()
         Be = self.eval_env.batch_size
+        gamma = self.cfg.gamma
 
-        ep_return = torch.zeros(Be)
+        traces: List[List[float]] = [[] for _ in range(Be)]
         ep_len = torch.zeros(Be)
-        returns: List[float] = []
+        disc_returns: List[float] = []
         lengths: List[float] = []
 
-        while len(returns) < self.cfg.eval_episodes:
+        while len(disc_returns) < self.cfg.eval_episodes:
             act = self.agent.select_action(state, obs, deterministic=True)
             step = self.eval_env.step(act.physical)
-            ep_return += step.reward
             ep_len += 1
 
-            # Close out finished episodes. BulletArm auto-resets so the
-            # next iter's slot is already fresh.
             for i in range(Be):
+                traces[i].append(float(step.reward[i].item()))
                 if step.done[i].item() > 0.5:
-                    returns.append(ep_return[i].item())
+                    # Reverse fold: R_t = r_t + γ·R_{t+1}.
+                    R = 0.0
+                    for r in reversed(traces[i]):
+                        R = r + gamma * R
+                    disc_returns.append(R)
                     lengths.append(ep_len[i].item())
-                    ep_return[i] = 0.0
+                    traces[i] = []
                     ep_len[i] = 0.0
+                    if len(disc_returns) >= self.cfg.eval_episodes:
+                        break
             state, obs = step.state, step.obs
 
-        # Sparse rewards, so return > 0 means task completed.
-        success_rate = float(np.mean([1.0 if r > 0 else 0.0 for r in returns]))
+        # Sparse rewards in {0, 1}, so disc_return > 0 iff success was reached.
+        success_rate = float(np.mean([1.0 if R > 0 else 0.0 for R in disc_returns]))
         return {
-            "eval/return_mean": float(np.mean(returns)),
+            "eval/return_disc_mean": float(np.mean(disc_returns)),
             "eval/success_rate": success_rate,
             "eval/length_mean": float(np.mean(lengths)),
         }

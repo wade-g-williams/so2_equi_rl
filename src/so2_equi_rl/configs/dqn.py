@@ -11,7 +11,9 @@ from so2_equi_rl.configs.base import TrainConfig
 
 @dataclass
 class DQNConfig(TrainConfig):
-    # Trainer-loop overrides matching paper Appendix F.
+    # Trainer-loop overrides matching paper Table 8 / Appendix F. The paper
+    # repo's parameters.py argparse defaults differ (bs=64) but training runs
+    # reported in the paper used the Table 8 values.
     total_steps: int = 20_000
     warmup_steps: int = 5_000  # ~100 expert episodes at max_steps=50
     batch_size: int = 32
@@ -31,14 +33,20 @@ class DQNConfig(TrainConfig):
     n_z: int = 3
     n_theta: int = 3
 
-    # Action-grid step sizes. dpos in meters, dz in meters, drot in radians.
+    # Action-grid step sizes per paper text (Wang et al. 2022 §6.1):
+    #   A_xy = {(x,y) | x,y ∈ {-0.05m, 0m, 0.05m}}
+    #   A_z  = {-0.02m, 0m, 0.02m}
+    #   A_θ  = {-π/16, 0, π/16}
+    # Paper runs dx=dy=dpos and a separate, smaller dz. The paper repo's
+    # argparse defaults match here (dpos=0.05); earlier internal runs used
+    # dpos=0.02 which diverged from paper text.
     # p_range is the closed gripper interval the discrete p indices map onto.
     dpos: float = 0.05
     dz: float = 0.02
     drot: float = math.pi / 16
     p_range: Tuple[float, float] = (0.0, 1.0)
 
-    # DQN hyperparameters.
+    # DQN hyperparameters per paper Table 8 / Appendix F.
     gamma: float = 0.95
     tau: float = 0.01  # Polyak soft target update
     lr: float = 1e-4

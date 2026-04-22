@@ -1,11 +1,14 @@
-"""SO(2) rotation helpers for obs and action batches. Used by RAD and
-DrQ to rotate obs, next_obs, and the planar (dx, dy) part of the action
-by per-row angles. Runs on replay-sampled batches so there's no gradient
-to carry and no hidden state between calls.
+"""Image-space augmentation helpers for replay-sampled batches.
 
-rotate_obs uses bilinear grid_sample with padding_mode='border', which
-matches scipy.ndimage.rotate(mode='nearest') on the zero-background
-heightmap.
+random_shift is the DrQ primitive (pad + random HxW crop, default pad=4).
+random_crop is the RAD/CURL/FERM primitive, same mechanics with pad=7
+(128+14=142 effective, cropped back to 128). Neither rotates the action
+because pixel translation does not change world-frame delta actions.
+
+rotate_obs, rotate_action_dxy, sample_so2_angles, and random_so2_augment
+stay here for backward-compatibility with tests and earlier equivariance
+experiments; the paper-faithful pipeline no longer uses them on the agent
+side (replay-buffer SO(2) aug lives in buffers/so2_aug.py).
 """
 
 import math
@@ -116,6 +119,64 @@ def rotate_action_dxy(action: torch.Tensor, theta: torch.Tensor) -> torch.Tensor
         action[:, i] for i in range(3, action.shape[1])
     ]
     return torch.stack(cols, dim=1)
+
+
+def random_shift(
+    obs: torch.Tensor,
+    *,
+    pad: int,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    """Paper-style DrQ random shift: zero-pad by `pad` pixels on each side,
+    then take a random HxW crop from the padded (H+2*pad)x(W+2*pad) tensor.
+
+    Wang et al. 2022 §E: "Shift baselines use random shift of ±4 pixels."
+    Matches Kostrikov et al. 2020 (DrQ) ShiftsAug on 128x128 heightmaps.
+
+    obs: (B, C, H, W), different per-row shifts
+    returns: (B, C, H, W)
+    """
+    if obs.ndim != 4:
+        raise ValueError(f"obs must be 4D (B, C, H, W), got {tuple(obs.shape)}")
+    if pad < 0:
+        raise ValueError(f"pad must be >= 0, got {pad}")
+    if pad == 0:
+        return obs.clone()
+
+    B, C, H, W = obs.shape
+    # Pad with zeros (the heightmap's out-of-workspace area is already 0).
+    padded = F.pad(obs, (pad, pad, pad, pad), mode="constant", value=0.0)
+
+    # Sample per-row offsets in [0, 2*pad] so the crop stays inside the padded tensor.
+    # cpu generator seeded by caller; offsets are integer pixels.
+    dx = torch.randint(0, 2 * pad + 1, (B,), generator=generator)
+    dy = torch.randint(0, 2 * pad + 1, (B,), generator=generator)
+
+    out = torch.empty_like(obs)
+    for i in range(B):
+        out[i] = padded[i, :, dy[i] : dy[i] + H, dx[i] : dx[i] + W]
+    return out
+
+
+def random_crop(
+    obs: torch.Tensor,
+    *,
+    pad: int,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    """Paper-style RAD/CURL/FERM random crop: zero-pad then take a HxW crop.
+
+    Paper used 142x142 raw obs cropped to 128x128; we already render at
+    128x128, so pad=7 gives (128+14)=142 effective → 128 crop, matching.
+
+    obs: (B, C, H, W)
+    returns: (B, C, H, W)
+    """
+    # Mechanically identical to random_shift (pad + random-crop-to-HxW) but
+    # exposed under the semantic paper uses in §E ("random crop" for RAD,
+    # CURL, FERM; "random shift" for DrQ). Same underlying op, different
+    # pad sizes (paper uses pad=7 for crop, pad=4 for shift).
+    return random_shift(obs, pad=pad, generator=generator)
 
 
 def random_so2_augment(

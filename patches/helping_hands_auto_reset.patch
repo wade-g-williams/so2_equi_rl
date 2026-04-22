@@ -1,0 +1,17 @@
+diff --git a/helping_hands_rl_envs/runner.py b/helping_hands_rl_envs/runner.py
+index 70e2460a..26983829 100644
+--- a/helping_hands_rl_envs/runner.py
++++ b/helping_hands_rl_envs/runner.py
+@@ -434,6 +434,12 @@ class SingleRunner(object):
+       obs, rewards, dones, metadata = results
+     states, hand_obs, obs = obs
+
++    # Mirrors MultiRunner's 'step_auto_reset' branch. Without this the env
++    # stays in its terminal state on done, so every subsequent step returns
++    # done after one tick and eval length collapses.
++    if auto_reset and dones:
++      states, hand_obs, obs = self.env.reset()
++
+     if metadata:
+       return (states, hand_obs, obs), rewards, dones, metadata
+     else:

@@ -2,6 +2,9 @@
 
 from so2_equi_rl.agents.base import Agent
 from so2_equi_rl.agents.dqn import DQNAgent
+from so2_equi_rl.agents.dqn_curl import DQNCURLAgent
+from so2_equi_rl.agents.dqn_drq import DQNDrQAgent
+from so2_equi_rl.agents.dqn_rad import DQNRADAgent
 from so2_equi_rl.agents.sac import SACAgent
 from so2_equi_rl.agents.sac_drq import SACDrQAgent
 from so2_equi_rl.agents.sac_ferm import SACFERMAgent
@@ -14,4 +17,7 @@ __all__ = [
     "SACFERMAgent",
     "SACRADAgent",
     "DQNAgent",
+    "DQNCURLAgent",
+    "DQNDrQAgent",
+    "DQNRADAgent",
 ]

@@ -110,10 +110,63 @@ def pull_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
     return _pack(dxyz, gripper_p)
 
 
+def stack_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
+    # Stateless stack expert. Two branches selected by whether cubeA is
+    # currently being carried (proxy: cubeA xy tracks TCP tightly AND
+    # cubeA has been lifted off the table):
+    #   pick branch (not carried):
+    #     1. hover above cubeA, 2. descend + close gripper
+    #   place branch (carried):
+    #     1. hover above cubeB at stack height + clearance,
+    #     2. descend to stack pose, 3. release gripper
+    # Success requires `~is_cubeA_grasped`, so the gripper must open at
+    # the stack pose. StackCube is harder than PickCube/PullCube so the
+    # warmup success rate will be lower; that's fine for buffer priming.
+    obs = wrapper._last_obs
+    assert obs is not None, "reset() must run before get_expert_action"
+
+    tcp_xyz = obs["extra"]["tcp_pose"][:, 0:3]
+    cubeA_xyz = wrapper.unwrapped.cubeA.pose.p
+    cubeB_xyz = wrapper.unwrapped.cubeB.pose.p
+
+    # Carried: cubeA xy-tight to TCP AND cubeA lifted above resting height
+    # (cube_half_size = 0.02, so resting cube z ≈ 0.02; >0.05 means lifted).
+    tcp_to_A_xy = (tcp_xyz[:, 0:2] - cubeA_xyz[:, 0:2]).norm(dim=1)
+    carried = (tcp_to_A_xy < 0.025) & (cubeA_xyz[:, 2] > 0.05)
+
+    # Pick branch.
+    above_A = torch.stack(
+        [cubeA_xyz[:, 0], cubeA_xyz[:, 1], cubeA_xyz[:, 2] + 0.12], dim=1
+    )
+    xy_err_A = (tcp_xyz[:, 0:2] - cubeA_xyz[:, 0:2]).abs().max(dim=1).values
+    hover_A = xy_err_A > 0.02
+    pick_target = torch.where(hover_A.unsqueeze(1), above_A, cubeA_xyz)
+    close_now = (~hover_A) & ((tcp_xyz[:, 2] - cubeA_xyz[:, 2]).abs() < 0.03)
+    pick_gripper = close_now.float().unsqueeze(1)  # 1 = close
+
+    # Place branch. Stack pose = cubeB.xy, cubeB.z + (half_A + half_B) = +0.04.
+    stack_z = cubeB_xyz[:, 2] + 0.04
+    above_B = torch.stack([cubeB_xyz[:, 0], cubeB_xyz[:, 1], stack_z + 0.10], dim=1)
+    stack_pos = torch.stack([cubeB_xyz[:, 0], cubeB_xyz[:, 1], stack_z], dim=1)
+    xy_err_B = (tcp_xyz[:, 0:2] - cubeB_xyz[:, 0:2]).abs().max(dim=1).values
+    hover_B = xy_err_B > 0.02
+    place_target = torch.where(hover_B.unsqueeze(1), above_B, stack_pos)
+    # Open gripper when at the stack pose (success requires release).
+    at_stack = (~hover_B) & ((tcp_xyz[:, 2] - stack_z).abs() < 0.02)
+    place_gripper = (~at_stack).float().unsqueeze(1)  # 1 = closed, 0 = open at stack
+
+    target = torch.where(carried.unsqueeze(1), place_target, pick_target)
+    gripper_p = torch.where(carried.unsqueeze(1), place_gripper, pick_gripper)
+    dxyz = _toward(target, tcp_xyz)
+
+    return _pack(dxyz, gripper_p)
+
+
 # close_loop_* task id → expert function.
 EXPERTS: Dict[str, Callable[["ManiSkillWrapper"], torch.Tensor]] = {
     "close_loop_block_picking": pick_cube_expert,
     "close_loop_block_pulling": pull_cube_expert,
+    "close_loop_drawer_opening": stack_cube_expert,
 }
 
 

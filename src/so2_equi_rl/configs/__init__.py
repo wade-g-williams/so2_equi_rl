@@ -2,6 +2,9 @@
 
 from so2_equi_rl.configs.base import TrainConfig
 from so2_equi_rl.configs.dqn import DQNConfig
+from so2_equi_rl.configs.dqn_curl import DQNCURLConfig
+from so2_equi_rl.configs.dqn_drq import DQNDrQConfig
+from so2_equi_rl.configs.dqn_rad import DQNRADConfig
 from so2_equi_rl.configs.sac import SACConfig
 from so2_equi_rl.configs.sac_drq import SACDrQConfig
 from so2_equi_rl.configs.sac_ferm import SACFERMConfig
@@ -14,4 +17,7 @@ __all__ = [
     "SACFERMConfig",
     "SACRADConfig",
     "DQNConfig",
+    "DQNCURLConfig",
+    "DQNDrQConfig",
+    "DQNRADConfig",
 ]

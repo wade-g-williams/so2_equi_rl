@@ -1,11 +1,14 @@
-"""FERM-SAC config. Adds the CURL-style contrastive-loss knobs on top of
-SACConfig. Two tau fields: cfg.tau (slow) for the critic target,
-curl_tau (fast) for the key encoder. Aug is SO(2) rotations not crops,
-so DrQ/RAD/FERM stay comparable in ablations.
+"""FERM-SAC config. Adds CURL-style contrastive-loss knobs on top of
+SACConfig. Paper §E: FERM uses random crop (142x142 -> 128x128) for the
+InfoNCE views. Two tau fields: cfg.tau (slow) for the critic target,
+curl_tau (fast) for the key encoder.
+
+Paper §E also pretrains the contrastive encoder for 1.6k steps on expert
+data before SAC training starts. NOT yet implemented, expected gap from
+paper for the Block Pulling FERM result.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from so2_equi_rl.configs.sac import SACConfig
 
@@ -16,9 +19,7 @@ class SACFERMConfig(SACConfig):
     # loss, not a bootstrapped TD target. Matches CURL and FERM.
     curl_tau: float = 0.05
 
-    # Weight on the InfoNCE loss inside the encoder_optim step. Redundant
-    # with encoder_lr in theory; kept as a separate knob so ablations can
-    # hold LR fixed and vary the loss contribution.
+    # Weight on the InfoNCE loss inside the encoder_optim step.
     curl_lambda: float = 1.0
 
     # Temperature divisor on the (B, B) logit matrix. CURL paper uses 1.0.
@@ -28,13 +29,6 @@ class SACFERMConfig(SACConfig):
     # InfoNCE and TD gradients have different scales.
     encoder_lr: float = 1e-3
 
-    # 'continuous' = uniform SO(2). 'discrete_cN' = the C_N lattice.
-    # Continuous gives more diverse negatives.
-    ferm_aug_mode: str = "continuous"
-
-    # None resolves to cfg.group_order in __post_init__. Unused in continuous mode.
-    ferm_group_order: Optional[int] = None
-
-    def __post_init__(self) -> None:
-        if self.ferm_group_order is None:
-            self.ferm_group_order = self.group_order
+    # Paper §E: random crop 142x142 -> 128x128, implemented as pad then
+    # random-crop-to-128 with pad=7 on both sides (128 + 14 = 142).
+    ferm_pad: int = 7

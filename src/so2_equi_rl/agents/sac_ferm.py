@@ -1,7 +1,8 @@
 """FERM-SAC. Subclass of SACAgent with one shared CNN encoder (actor +
 critic), a Polyak momentum key encoder, and a CURL-style InfoNCE loss
-over two SO(2)-rotated views. Shared encoder trains from the critic TD
-loss and the InfoNCE loss; actor loss is detached on both paths.
+over two random-crop views (142x142 -> 128x128, pad=7). Shared encoder
+trains from the critic TD loss and the InfoNCE loss; actor loss is
+detached on both paths.
 
 Two Polyak rates: cfg.tau (slow) for the critic target, cfg.curl_tau
 (fast) for the key encoder. Key side is not bootstrapped, so it can
@@ -60,12 +61,7 @@ class SACFERMAgent(SACAgent):
         self.curl_tau = float(cfg.curl_tau)
         self.curl_lambda = float(cfg.curl_lambda)
         self.curl_temperature = float(cfg.curl_temperature)
-        self.ferm_aug_mode = cfg.ferm_aug_mode
-        self.ferm_group_order = int(
-            cfg.ferm_group_order
-            if cfg.ferm_group_order is not None
-            else cfg.group_order
-        )
+        self.ferm_pad = int(cfg.ferm_pad)
 
         # Shared CNN encoder injected into both actor and critic. critic.parameters()
         # picks it up, so critic_optim already covers encoder grads from TD.
@@ -126,7 +122,7 @@ class SACFERMAgent(SACAgent):
             lr=cfg.encoder_lr,
         )
 
-        # CPU generator. sample_so2_angles uses torch.randint which would crash on a cuda generator.
+        # CPU generator. random_crop uses torch.randint which needs cpu.
         self._aug_gen = torch.Generator(device="cpu")
         self._aug_gen.manual_seed(int(cfg.seed) + _AUG_SEED_OFFSET)
 
@@ -186,27 +182,20 @@ class SACFERMAgent(SACAgent):
         alpha_loss.backward()
         self.alpha_optim.step()
 
-        # InfoNCE step. Two independent rotations: theta_q for the query,
-        # theta_k for the key. Pulls (q, k) from the same row together and
-        # pushes other pairings apart.
+        # InfoNCE step. Paper §E FERM: two independent random crops
+        # (142x142 -> 128x128) for the query and key. Pulls (q, k) from the
+        # same row together and pushes other pairings apart.
         B = batch.obs.shape[0]
-        theta_q = aug_mod.sample_so2_angles(
-            B,
-            mode=self.ferm_aug_mode,
-            group_order=self.ferm_group_order,
-            generator=self._aug_gen,
-        )
-        theta_k = aug_mod.sample_so2_angles(
-            B,
-            mode=self.ferm_aug_mode,
-            group_order=self.ferm_group_order,
-            generator=self._aug_gen,
-        )
 
-        # Rotate raw obs first, then tile. Rotating the tiled tensor would
-        # rotate the state plane, which is SO(2)-invariant.
-        q_obs = aug_mod.rotate_obs(batch.obs, theta_q)
-        k_obs = aug_mod.rotate_obs(batch.obs, theta_k)
+        # random_crop uses a CPU generator; move raw obs to cpu for the
+        # crop, then back to device for encoding.
+        obs_cpu = batch.obs.cpu()
+        q_obs = aug_mod.random_crop(
+            obs_cpu, pad=self.ferm_pad, generator=self._aug_gen
+        ).to(self.device)
+        k_obs = aug_mod.random_crop(
+            obs_cpu, pad=self.ferm_pad, generator=self._aug_gen
+        ).to(self.device)
         q_obs_tiled = tile_state(q_obs, batch.state)
         k_obs_tiled = tile_state(k_obs, batch.state)
 

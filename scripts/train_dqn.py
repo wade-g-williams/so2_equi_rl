@@ -17,9 +17,13 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _REPO_ROOT]
 
 from so2_equi_rl.agents.dqn import DQNAgent
+from so2_equi_rl.agents.dqn_curl import DQNCURLAgent
+from so2_equi_rl.agents.dqn_drq import DQNDrQAgent
 from so2_equi_rl.agents.dqn_rad import DQNRADAgent
 from so2_equi_rl.buffers.replay import ReplayBuffer
 from so2_equi_rl.configs.dqn import DQNConfig
+from so2_equi_rl.configs.dqn_curl import DQNCURLConfig
+from so2_equi_rl.configs.dqn_drq import DQNDrQConfig
 from so2_equi_rl.configs.dqn_rad import DQNRADConfig
 from so2_equi_rl.envs import make_env
 from so2_equi_rl.networks import CNNDQNNet, EquiDQNNet
@@ -28,12 +32,15 @@ from so2_equi_rl.utils import set_seed
 from so2_equi_rl.utils.cli_args import add_dataclass_args, extract_dataclass_kwargs
 from so2_equi_rl.utils.logging import RunLogger
 
-# Maps --network to (agent_cls, net_cls, cfg_cls). rad swaps in the
-# RAD agent and config; equi/cnn use vanilla DQN.
+# Maps --network to (agent_cls, net_cls, cfg_cls). equi/cnn use vanilla
+# DQN, the rest swap in their own agent + config. All CNN-backed variants
+# share CNNDQNNet; equi is the only non-CNN backbone.
 _VARIANTS = {
     "equi": (DQNAgent, EquiDQNNet, DQNConfig),
     "cnn": (DQNAgent, CNNDQNNet, DQNConfig),
     "rad": (DQNRADAgent, CNNDQNNet, DQNRADConfig),
+    "drq": (DQNDrQAgent, CNNDQNNet, DQNDrQConfig),
+    "curl": (DQNCURLAgent, CNNDQNNet, DQNCURLConfig),
 }
 
 
@@ -94,7 +101,12 @@ def main() -> None:
 
     agent = agent_cls(cfg, net_cls=net_cls)
 
-    logger = RunLogger(cfg, run_name=args.run_name)
+    logger = RunLogger(
+        cfg,
+        run_name=args.run_name,
+        alg_family="dqn",
+        alg_variant=args.network,
+    )
     print(f"[train_dqn] run dir: {logger.run_dir}")
 
     trainer = DQNTrainer(cfg, agent, train_env, eval_env, buffer, logger)

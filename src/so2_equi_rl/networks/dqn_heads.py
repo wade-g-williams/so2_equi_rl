@@ -164,6 +164,9 @@ class CNNDQNNet(nn.Module):
             n_hidden * 8,
             n_hidden * 2,
         )
+        # Flat feature dim exposed for CURL-style contrastive heads.
+        # Q-net shares its conv stack with the bilinear projection.
+        self.feat_dim = c[6] * 3 * 3
 
         self.conv = nn.Sequential(
             # block 1: 128 -> 64
@@ -209,3 +212,15 @@ class CNNDQNNet(nn.Module):
         flat = self.fc(feat)
         # Same row-major channel order as the equi net: (n_xy, n_z, n_theta, n_p).
         return flat.view(B, self.n_xy, self.n_z, self.n_theta, self.n_p)
+
+    def features(self, obs: torch.Tensor) -> torch.Tensor:
+        # Flat pre-FC activation, shape (B, feat_dim). Used by DQN-CURL as
+        # the contrastive head's input. Sharing the same conv stack is how
+        # the InfoNCE loss ends up shaping the Q-encoder representation.
+        if obs.shape[-2:] != (EXPECTED_OBS_SIZE, EXPECTED_OBS_SIZE):
+            raise ValueError(
+                f"CNNDQNNet.features expects (B, C, {EXPECTED_OBS_SIZE}, "
+                f"{EXPECTED_OBS_SIZE}) input; got spatial {tuple(obs.shape[-2:])}"
+            )
+        B = obs.shape[0]
+        return self.conv(obs).view(B, -1)

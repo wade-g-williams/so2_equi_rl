@@ -1,11 +1,14 @@
 """DrQ-SAC. Subclass of SACAgent that averages the Bellman target over K
-augmented copies of next_obs and the critic+actor losses over M augmented
-copies of obs. Per-row theta is independent across (copy, row), but the
-copies are fused into one (n*B, ...) tensor op so each side is a single
-rotate_obs call.
+shift-augmented copies of next_obs and the critic+actor losses over M
+shift-augmented copies of obs. Per-row shift is independent across
+(copy, row); copies are fused into one (n*B, ...) tensor op.
+
+Paper §E + Kostrikov et al. 2020: DrQ uses random ±4 pixel shift.
+Pixel shift doesn't change world-frame delta actions, so action is NOT
+augmented.
 """
 
-from typing import Dict, Optional, Tuple, Type
+from typing import Dict, Tuple, Type
 
 import torch
 import torch.nn as nn
@@ -24,7 +27,7 @@ _AUG_SEED_OFFSET = 1337
 
 
 class SACDrQAgent(SACAgent):
-    """Twin-Q SAC with DrQ-style augmentation on both sides of the update."""
+    """Twin-Q SAC with paper-faithful DrQ shift augmentation on both sides."""
 
     def __init__(
         self,
@@ -37,49 +40,34 @@ class SACDrQAgent(SACAgent):
 
         self.drq_k = int(cfg.drq_k)
         self.drq_m = int(cfg.drq_m)
-        self.drq_aug_mode = cfg.drq_aug_mode
-        self.drq_group_order = int(
-            cfg.drq_group_order if cfg.drq_group_order is not None else cfg.group_order
-        )
+        self.drq_pad = int(cfg.drq_pad)
 
-        # CPU generator. sample_so2_angles uses torch.randint which would crash on a cuda generator.
+        # CPU generator. random_shift uses torch.randint which needs cpu.
         self._aug_gen = torch.Generator(device="cpu")
         self._aug_gen.manual_seed(int(cfg.seed) + _AUG_SEED_OFFSET)
 
-    def _augment_copies(
+    def _shift_copies(
         self,
         obs: Tensor,
         state: Tensor,
         n_copies: int,
-        action: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
-        # n_copies independent augmented copies fused into one tensor op.
-        B = obs.shape[0]
-        total = n_copies * B
-
-        # .repeat(n, 1, 1, 1) tiles along dim 0 so row i appears at positions i, B+i, 2B+i, ...
-        obs_rep = obs.repeat(n_copies, 1, 1, 1)
+    ) -> Tuple[Tensor, Tensor]:
+        # n_copies independent shifted copies fused into one tensor op.
+        # .repeat(n, 1, 1, 1) tiles along dim 0 so row i appears at positions
+        # i, B+i, 2B+i, ...
+        obs_rep = obs.repeat(n_copies, 1, 1, 1).cpu()
         state_rep = state.repeat(n_copies, 1)
 
-        # One fresh theta per (copy, row), independent across copies.
-        theta = aug_mod.sample_so2_angles(
-            total,
-            mode=self.drq_aug_mode,
-            group_order=self.drq_group_order,
-            generator=self._aug_gen,
+        obs_shifted = aug_mod.random_shift(
+            obs_rep, pad=self.drq_pad, generator=self._aug_gen
         )
-
-        obs_rot = aug_mod.rotate_obs(obs_rep, theta)
-        if action is None:
-            return obs_rot, state_rep, None
-
-        action_rep = action.repeat(n_copies, 1)
-        action_rot = aug_mod.rotate_action_dxy(action_rep, theta)
-        return obs_rot, state_rep, action_rot
+        return obs_shifted.to(state.device), state_rep
 
     def update(self, batch: Transition) -> Dict[str, float]:
-        # K aug copies of next_obs for the target average, M aug copies of
-        # obs for the critic and actor losses. Alpha and Polyak match base SAC.
+        # K shifted copies of next_obs for the target average, M shifted
+        # copies of obs for the critic and actor losses. Alpha and Polyak
+        # match base SAC. Action passes through unchanged, since pixel shift is
+        # not an action-space transformation.
         batch = batch.to(self.device, non_blocking=True)
 
         B = batch.obs.shape[0]
@@ -93,8 +81,8 @@ class SACDrQAgent(SACAgent):
         if done.dim() == 1:
             done = done.unsqueeze(-1)
 
-        # Target side: K copies. next_action is sampled on the rotated obs, so no action rotation here.
-        next_obs_k, next_state_k, _ = self._augment_copies(
+        # Target side: K copies. next_action is sampled on the shifted obs.
+        next_obs_k, next_state_k = self._shift_copies(
             batch.next_obs, batch.next_state, K
         )
         next_obs_k_tiled = tile_state(next_obs_k, next_state_k)
@@ -106,20 +94,17 @@ class SACDrQAgent(SACAgent):
                 torch.min(q1_next_k, q2_next_k) - self.alpha * next_log_prob_k
             )  # (K*B, 1)
 
-            # Per-copy Bellman target, then average across K.
             reward_k = reward.repeat(K, 1)
             done_k = done.repeat(K, 1)
             y_k = reward_k + self.gamma * (1.0 - done_k) * min_q_next_k
             y = y_k.view(K, B, 1).mean(dim=0)
 
-        # Current side: M copies of (obs, action). Same theta rotates both
-        # so the (obs, action) pair stays on the equivariant manifold.
-        obs_m, state_m, action_m = self._augment_copies(
-            batch.obs, batch.state, M, action=batch.action
-        )
+        # Current side: M shifted copies of obs. Action tiled M-fold unchanged.
+        obs_m, state_m = self._shift_copies(batch.obs, batch.state, M)
         obs_m_tiled = tile_state(obs_m, state_m)
+        action_m = batch.action.repeat(M, 1)
 
-        # Critic step. Broadcast y M-fold so every copy is scored against the same averaged target.
+        # Critic step. Broadcast y M-fold so every copy hits the same averaged target.
         q1, q2 = self.critic(obs_m_tiled, action_m)  # (M*B, 1)
         y_broadcast = y.repeat(M, 1)
         critic_loss = F.mse_loss(q1, y_broadcast) + F.mse_loss(q2, y_broadcast)
@@ -130,7 +115,7 @@ class SACDrQAgent(SACAgent):
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optim.step()
 
-        # Actor step. Same M-augmented obs so the policy sees the critic's distribution.
+        # Actor step. Same M-shifted obs so the policy sees the critic's distribution.
         new_action, log_prob, _ = self.actor.sample(obs_m_tiled)
         q1_new, q2_new = self.critic(obs_m_tiled, new_action)
         min_q_new = torch.min(q1_new, q2_new)
@@ -142,7 +127,6 @@ class SACDrQAgent(SACAgent):
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip_norm)
         self.actor_optim.step()
 
-        # Temperature step. Detach so the gradient only touches log_alpha.
         alpha_loss = -(
             self.log_alpha * (log_prob + self.target_entropy).detach()
         ).mean()
@@ -151,7 +135,6 @@ class SACDrQAgent(SACAgent):
         alpha_loss.backward()
         self.alpha_optim.step()
 
-        # Polyak target update.
         with torch.no_grad():
             for p, p_target in zip(
                 self.critic.parameters(), self.critic_target.parameters()

@@ -43,6 +43,8 @@ def make_env(cfg, *, seed: int, num_processes: int, num_envs: int = 1):
             seed=seed,
             obs_size=cfg.obs_size,
             max_steps=cfg.max_steps,
+            dpos=getattr(cfg, "dpos", None),
+            drot=getattr(cfg, "drot", None),
         )
     if backend == "maniskill":
         # Lazy-imported so BulletArm-only workflows don't need ManiSkill installed.

@@ -2,11 +2,18 @@
 new transitions overwrite the oldest. obs and next_obs are quantized to
 uint8 on push and dequantized on sample (~4x memory savings, 13 GB -> 3.25
 GB at default capacity). sample() returns float32 so agent code doesn't care.
+
+SO(2) augmentation: with so2_aug_k>0, every pushed transition is followed
+by k rotated copies (random theta per copy). Paper Fig 7 uses k=4. Action
+must be 5-dim [p, dx, dy, dz, dr]; rotation applies to obs, next_obs, and
+(dx, dy) only. Paper: Wang et al. 2022, Sec 6.2 + utils/torch_utils.py.
 """
 
 from typing import NamedTuple, Tuple
 
 import torch
+
+from so2_equi_rl.buffers.so2_aug import augment_transition_so2, sample_thetas
 
 
 class Transition(NamedTuple):
@@ -52,12 +59,23 @@ class ReplayBuffer:
         obs_clip: float = 0.32,
         obs_scale: float = 0.4,
         enforce_unscaled_action_range: bool = True,
+        so2_aug_k: int = 0,
     ) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be positive, got {capacity}")
+        if so2_aug_k < 0:
+            raise ValueError(f"so2_aug_k must be >= 0, got {so2_aug_k}")
+        # so2_aug assumes the 5-dim SAC action layout [p, dx, dy, dz, dr].
+        # DQN stores integer grid indices (action_dim=4) and never needs aug
+        # per the paper (Fig 6 uses no aug buffer).
+        if so2_aug_k > 0 and action_dim != 5:
+            raise ValueError(
+                f"so2_aug_k>0 requires action_dim=5 (SAC layout), got {action_dim}"
+            )
         self.capacity = capacity
         self._obs_clip = float(obs_clip)
         self._obs_scale = float(obs_scale)
+        self._so2_aug_k = int(so2_aug_k)
         # SAC stores tanh-squashed actions in [-1, 1]; DQN stores integer
         # grid indices cast to float32. Flip off for the latter.
         self._enforce_unscaled_action_range = bool(enforce_unscaled_action_range)
@@ -144,10 +162,56 @@ class ReplayBuffer:
                     f"max|a|={max_abs:.4f}. Did you forget to encode_action() before push?"
                 )
 
-        obs_c = self._quantize_obs(_as_cpu_f32(obs))
-        next_obs_c = self._quantize_obs(_as_cpu_f32(next_obs))
+        # Keep float obs/next_obs in scope for aug before we quantize.
+        obs_f32 = _as_cpu_f32(obs)
+        next_obs_f32 = _as_cpu_f32(next_obs)
+        obs_c = self._quantize_obs(obs_f32)
+        next_obs_c = self._quantize_obs(next_obs_f32)
 
-        # Wrap-around write indices.
+        # Write the original B transitions first.
+        self._write_chunk(
+            state_c, obs_c, action_c, reward_c, next_state_c, next_obs_c, done_c
+        )
+
+        # Paper's SO(2) buffer aug: k random rotations per transition,
+        # pushed alongside the original. Done on the float obs so bilinear
+        # interp doesn't interact with the uint8 quantization noise floor.
+        # Scalars (state, reward, next_state, done) are rotation-invariant.
+        for _ in range(self._so2_aug_k):
+            thetas = sample_thetas(batch, self._gen)
+            s_aug, o_aug, a_aug, r_aug, ns_aug, no_aug, d_aug = augment_transition_so2(
+                state_c,
+                obs_f32,
+                action_c,
+                reward_c,
+                next_state_c,
+                next_obs_f32,
+                done_c,
+                thetas,
+            )
+            self._write_chunk(
+                s_aug,
+                self._quantize_obs(o_aug),
+                a_aug,
+                r_aug,
+                ns_aug,
+                self._quantize_obs(no_aug),
+                d_aug,
+            )
+
+    def _write_chunk(
+        self,
+        state_c: torch.Tensor,
+        obs_c: torch.Tensor,
+        action_c: torch.Tensor,
+        reward_c: torch.Tensor,
+        next_state_c: torch.Tensor,
+        next_obs_c: torch.Tensor,
+        done_c: torch.Tensor,
+    ) -> None:
+        # Wrap-around write a batch of already-cast tensors. Factored out
+        # because the aug path writes k+1 chunks per push().
+        batch = state_c.shape[0]
         idxs = (torch.arange(batch) + self._idx) % self.capacity
 
         self._state[idxs] = state_c

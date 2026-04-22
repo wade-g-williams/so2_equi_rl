@@ -26,7 +26,7 @@ if _hhe.__file__ is None:
         list(_hhe.__path__)[0], "helping_hands_rl_envs", "__init__.py"
     )
 
-from helping_hands_rl_envs import env_factory  # noqa: E402 — must follow the patch
+from helping_hands_rl_envs import env_factory  # noqa: E402, must follow the patch
 
 # Re-export so existing `from so2_equi_rl.envs.wrapper import EnvStep`
 # callers keep working.
@@ -43,8 +43,11 @@ _DEFAULT_WORKSPACE = np.asarray(
 )
 
 
-# Step sizes for the library's scripted expert (5 cm, 22.5 deg). The RL
-# agent has its own dpos/drot in agents/sac.py.
+# Fallback step sizes for the library's scripted expert (5 cm, 22.5 deg).
+# EnvWrapper takes dpos/drot ctor args so the planner's step size stays
+# aligned with the agent's action grid. A mismatch silently corrupts warmup
+# data (env executes a 5 cm expert move, buffer stores the snapped grid
+# index, Q-learning trains on transitions where action and next_obs disagree).
 _EXPERT_DPOS = 0.05
 _EXPERT_DROT = float(np.pi / 8)
 
@@ -84,6 +87,8 @@ class EnvWrapper:
         render: bool = False,
         workspace: Optional[np.ndarray] = None,
         planner_config: Optional[dict] = None,
+        dpos: Optional[float] = None,
+        drot: Optional[float] = None,
     ) -> None:
         if env_name not in _CLOSE_LOOP_ENVS:
             raise ValueError(
@@ -109,12 +114,15 @@ class EnvWrapper:
             "seed": seed,
         }
 
-        # Scripted expert config (used to generate demos).
+        # Scripted expert config (used to generate demos). The planner's
+        # dpos/drot must match the agent's action grid / scaling so the
+        # transitions stored in the buffer use the same action units the
+        # env actually executed.
         if planner_config is None:
             planner_config = {
                 "random_orientation": False,
-                "dpos": _EXPERT_DPOS,
-                "drot": _EXPERT_DROT,
+                "dpos": float(dpos) if dpos is not None else _EXPERT_DPOS,
+                "drot": float(drot) if drot is not None else _EXPERT_DROT,
             }
 
         # createEnvs returns a SingleRunner when num_processes=0, else a
@@ -146,7 +154,17 @@ class EnvWrapper:
         if self._is_single:
             actions_np = actions_np[0]
 
-        (states, _in_hand, obs), rewards, dones = self._runner.step(actions_np)
+        # auto_reset=True so when an episode ends, the runner immediately
+        # resets the env and returns the post-reset obs. Without this the
+        # env sits in a terminal state and every subsequent step returns
+        # done=True after one tick. See close_loop_env.py step(). The
+        # symptom is eval/length_mean == 10.8 (one 50-step episode + four
+        # single-tick ghost episodes averaged to 10.8). BulletArm's
+        # MultiRunner supports this via the 'step_auto_reset' IPC cmd;
+        # SingleRunner was patched to match.
+        (states, _in_hand, obs), rewards, dones = self._runner.step(
+            actions_np, auto_reset=True
+        )
 
         states_t, obs_t = self._to_batched_obs(states, obs)
 

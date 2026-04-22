@@ -5,6 +5,9 @@
 /scripts/render_env_panel.py
 /scripts/plot_ms3_results.py
 
+# Local health probe
+/.health/
+
 # Outputs
 /outputs/
 

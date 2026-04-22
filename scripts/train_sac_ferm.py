@@ -60,6 +60,7 @@ def main() -> None:
         obs_shape=(1, cfg.obs_size, cfg.obs_size),
         action_dim=cfg.action_dim,
         seed=cfg.seed,
+        so2_aug_k=cfg.so2_aug_k,
     )
 
     # CNN triple is hardcoded; SACFERMAgent raises on anything else.
@@ -70,7 +71,9 @@ def main() -> None:
         critic_cls=CNNCritic,
     )
 
-    logger = RunLogger(cfg, run_name=args.run_name)
+    logger = RunLogger(
+        cfg, run_name=args.run_name, alg_family="sac", alg_variant="ferm"
+    )
     print(f"[train_sac_ferm] run dir: {logger.run_dir}")
 
     trainer = SACTrainer(cfg, agent, train_env, eval_env, buffer, logger)

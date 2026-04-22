@@ -79,6 +79,7 @@ def main() -> None:
         obs_shape=(1, cfg.obs_size, cfg.obs_size),
         action_dim=cfg.action_dim,
         seed=cfg.seed,
+        so2_aug_k=cfg.so2_aug_k,
     )
 
     encoder_cls, actor_cls, critic_cls = _ENCODER_VARIANTS[args.encoder]
@@ -89,7 +90,7 @@ def main() -> None:
         critic_cls=critic_cls,
     )
 
-    logger = RunLogger(cfg, run_name=args.run_name)
+    logger = RunLogger(cfg, run_name=args.run_name, alg_family="sac", alg_variant="drq")
     print(f"[train_sac_drq] run dir: {logger.run_dir}")
 
     trainer = SACTrainer(cfg, agent, train_env, eval_env, buffer, logger)
