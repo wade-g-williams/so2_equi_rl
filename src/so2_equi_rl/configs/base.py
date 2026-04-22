@@ -27,11 +27,11 @@ class TrainConfig:
     ms3_depth_max: float = 0.4  # meters, depth clip
     ms3_control_mode: str = "pd_ee_delta_pose"
     ms3_sim_backend: str = "gpu"
-    # MS3 reward mode. Defaults to dense (proximity + grasp + lift bonuses,
-    # MS3 native) so baselines have the signal the MS3 benchmark assumes.
-    # Flip to 'sparse' for direct {0, 1} parity with the paper's BulletArm
-    # regime.
-    ms3_reward_mode: str = "dense"
+    # MS3 reward mode. Defaults to 'normalized_dense' (MS3's own default),
+    # which is shaped reward bounded to roughly [0, 1] per step. Other
+    # valid options: 'dense' (unnormalized, unbounded), 'sparse' ({0, 1}
+    # on success only, matches the paper's BulletArm regime), 'none'.
+    ms3_reward_mode: str = "normalized_dense"
 
     # Training budget and cadence.
     total_steps: int = 50_000
