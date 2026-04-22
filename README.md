@@ -80,6 +80,82 @@ Each run writes a timestamped directory under `outputs/` with the resolved confi
 
 Reproducing the full matrix means looping over variants, tasks, and seeds. Each `train_*.py` script is standalone, so run them however fits your hardware.
 
+BulletArm loop (all variants, all three tasks, seeds 0 and 1, adjust the `seed` range for more):
+
+```bash
+conda activate equi_rl
+
+for task in close_loop_block_picking close_loop_block_pulling close_loop_drawer_opening; do
+  for seed in 0 1; do
+    for enc in equi cnn; do
+      python scripts/train_sac.py --encoder $enc --env-name $task \
+          --env-backend bulletarm --seed $seed --total-steps 20000 \
+          --num-processes 5 --run-name sac_${enc}_${task}_s$seed
+    done
+    python scripts/train_sac_drq.py --encoder cnn --env-name $task \
+        --env-backend bulletarm --seed $seed --total-steps 20000 \
+        --num-processes 5 --run-name sac_drq_cnn_${task}_s$seed
+    python scripts/train_sac_rad.py --encoder cnn --env-name $task \
+        --env-backend bulletarm --seed $seed --total-steps 20000 \
+        --num-processes 5 --run-name sac_rad_cnn_${task}_s$seed
+    for net in equi cnn drq rad curl; do
+      python scripts/train_dqn.py --network $net --env-name $task \
+          --env-backend bulletarm --seed $seed --total-steps 20000 \
+          --num-processes 5 --run-name dqn_${net}_${task}_s$seed
+    done
+  done
+done
+```
+
+ManiSkill3 loop, same shape with `--env-backend maniskill`, `--num-envs 32`, and the three MS3 task ids:
+
+```bash
+conda activate ms3_equi
+
+for task in PickCube-v1 PullCube-v1 StackCube-v1; do
+  for seed in 0 1; do
+    for enc in equi cnn; do
+      python scripts/train_sac.py --encoder $enc --env-name $task \
+          --env-backend maniskill --seed $seed --total-steps 20000 \
+          --num-envs 32 --run-name sac_${enc}_${task}_s$seed
+    done
+    python scripts/train_sac_drq.py --encoder cnn --env-name $task \
+        --env-backend maniskill --seed $seed --total-steps 20000 \
+        --num-envs 32 --run-name sac_drq_cnn_${task}_s$seed
+    python scripts/train_sac_rad.py --encoder cnn --env-name $task \
+        --env-backend maniskill --seed $seed --total-steps 20000 \
+        --num-envs 32 --run-name sac_rad_cnn_${task}_s$seed
+    for net in equi cnn drq rad curl; do
+      python scripts/train_dqn.py --network $net --env-name $task \
+          --env-backend maniskill --seed $seed --total-steps 20000 \
+          --num-envs 32 --run-name dqn_${net}_${task}_s$seed
+    done
+  done
+done
+```
+
+FERM needs 1600 InfoNCE pretrain steps on expert-demo obs before SAC starts (paper Appendix F). Without it, FERM tends to flatline on block_pulling. Two steps per cell, pretrain then load:
+
+```bash
+# BulletArm FERM example (one task, one seed)
+conda activate equi_rl
+
+python scripts/pretrain_ferm.py \
+    --env-name close_loop_block_pulling --env-backend bulletarm \
+    --seed 0 --num-processes 5 \
+    --run-name ferm_pretrain_block_pulling_s0
+
+ENC=$(ls -td outputs/*_ferm_pretrain_block_pulling_s0/ckpts/pretrained_encoder.pt | head -1)
+
+python scripts/train_sac_ferm.py \
+    --env-name close_loop_block_pulling --env-backend bulletarm \
+    --seed 0 --total-steps 20000 --num-processes 5 \
+    --pretrained-encoder $ENC \
+    --run-name sac_ferm_block_pulling_s0
+```
+
+For MS3 FERM, swap `--env-backend maniskill`, `--num-envs 32`, the conda env, and the task id.
+
 Plots:
 
 ```bash
