@@ -7,7 +7,7 @@ Reimplementation of Wang et al., *SO(2)-Equivariant Reinforcement Learning* (ICL
 Two conda envs, one per simulator. BulletArm needs Python 3.7 to match the paper, ManiSkill3 needs 3.10. The BulletArm sim is vendored as a submodule.
 
 ```bash
-git clone --recursive git@github.com:wade-g-williams/so2_equi_rl.git
+git clone --recursive https://github.com/wade-g-williams/so2_equi_rl.git
 cd so2_equi_rl
 ```
 
