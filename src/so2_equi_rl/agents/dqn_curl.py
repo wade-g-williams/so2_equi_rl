@@ -1,20 +1,14 @@
-"""CURL-DQN. Subclass of DQNAgent with a CURL-style InfoNCE loss over
-two random-crop views of obs, sharing the Q-net's conv stack with the
-contrastive head. Paper §E: random crop 142x142 -> 128x128 (pad=7).
+"""CURL-DQN. Adds a CURL InfoNCE loss over two random-crop views, sharing
+the Q-net's conv stack with the contrastive head (pad=7, 142 -> 128).
 
-The online encoder (policy_net.conv) is trained by two signals:
-    1. TD loss through self.optim (vanilla DQN path).
-    2. InfoNCE through self.encoder_optim (this file).
-Both zero_grad/backward/step pairs run per update call, with different
-Adam states so the two gradient scales stay decoupled.
+The conv stack trains from TD (self.optim) and InfoNCE (self.encoder_optim).
+Both run per update with distinct Adam states so the two gradient scales
+stay decoupled. Momentum key-net is a frozen Polyak copy of policy_net at
+cfg.curl_tau; since the key side isn't bootstrapped, curl_tau can run
+faster than cfg.tau without destabilising the TD target.
 
-Momentum key-net: a Polyak-averaged copy of policy_net. The key side
-trains by Polyak only (requires_grad_(False)), so cfg.curl_tau can be
-faster than cfg.tau without destabilising the Bellman target.
-
-CNN-only. The bilinear InfoNCE head expects a flat feature vector, and
-EquiDQNNet returns a structured GeometricTensor-backed grid that doesn't
-plug in cleanly. Matches sac_ferm.py's CNN-only stance.
+CNN-only (same reason as sac_ferm.py): the bilinear head expects a flat
+feature vector and EquiDQNNet's structured output doesn't plug in cleanly.
 """
 
 import copy
@@ -58,10 +52,9 @@ class DQNCURLAgent(DQNAgent):
         self.curl_pad = int(cfg.curl_pad)
 
         # Momentum key-net. Full net deepcopy (not just .conv) keeps the
-        # checkpoint format uniform and mirrors sac_ferm's k_encoder clone.
-        # Only .features() is ever called on it, so the fc head is dead weight
-        # but cheap, and copying the whole module avoids buffer-aliasing
-        # pitfalls that bit SAC-DrQ's state_dict path.
+        # checkpoint format uniform and avoids the buffer-aliasing pitfalls
+        # that bit SAC-DrQ's state_dict path. Only .features() is ever
+        # called on it, so the fc head is dead weight but cheap.
         self.k_net = copy.deepcopy(self.policy_net)
         for p in self.k_net.parameters():
             p.requires_grad_(False)
@@ -74,10 +67,9 @@ class DQNCURLAgent(DQNAgent):
         )
         nn.init.orthogonal_(self.W)
 
-        # Separate encoder_optim over the conv stack + W. self.optim (from
-        # DQNAgent.__init__) already owns all policy_net params including
-        # the conv; both optimizers touching the same conv tensors is fine,
-        # they just keep distinct Adam moments.
+        # Separate encoder_optim over the conv stack + W. self.optim already
+        # owns all policy_net params (conv included); both optimizers touch
+        # the same conv tensors but keep distinct Adam moments.
         self.encoder_optim = torch.optim.Adam(
             list(self.policy_net.conv.parameters()) + [self.W],
             lr=cfg.encoder_lr,
@@ -128,7 +120,7 @@ class DQNCURLAgent(DQNAgent):
             nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.grad_clip_norm)
         self.optim.step()
 
-        # InfoNCE step. Paper §E CURL: two independent random crops (142 ->
+        # InfoNCE step. Paper sec E CURL: two independent random crops (142 ->
         # 128) for the query and key. Pulls (q, k) from the same row together
         # and pushes other pairings apart.
         obs_cpu = batch.obs.cpu()

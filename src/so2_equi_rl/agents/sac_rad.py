@@ -1,7 +1,7 @@
 """RAD-SAC. Subclass of SACAgent that applies a random crop to (obs,
 next_obs) and runs a vanilla SAC update on the augmented transition.
 
-Paper §E: RAD uses random crop (142x142 -> 128x128). Action is NOT
+Paper sec E: RAD uses random crop (142x142 -> 128x128). Action is NOT
 augmented, since pixel-space translation doesn't change the world-frame
 delta action. Reward, state, next_state, done are invariant.
 """

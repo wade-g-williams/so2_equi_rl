@@ -79,9 +79,12 @@ class BaseTrainer(ABC):
             # Fresh rollout state. On resume this drops the in-flight episode.
             self._state, self._obs = self.train_env.reset()
 
-            # Warmup triggers on buffer length, not global_step, so a
-            # resume without a buffer sidecar still refills first.
-            if len(self.buffer) < self.cfg.warmup_steps:
+            # Warmup runs on empty buffer only. With episode-based warmup,
+            # we can't cheaply compare len(buffer) to warmup_episodes (episodes
+            # aren't tracked in the buffer state), so a buffer-sidecar resume
+            # skips warmup by virtue of having any entries. Fresh runs start
+            # at len==0 and warm up.
+            if len(self.buffer) == 0:
                 self._warmup()
 
             self._train_loop()
@@ -100,9 +103,17 @@ class BaseTrainer(ABC):
 
     def _warmup(self) -> None:
         # Seed the buffer via _warmup_action. No updates, no eval, no
-        # global_step advance. BulletArm auto-resets on done.
-        print(f"[warmup] filling buffer to {self.cfg.warmup_steps} transitions")
-        while len(self.buffer) < self.cfg.warmup_steps:
+        # global_step advance. Counts completed expert episodes (done
+        # flags), not env-steps or buffer entries; paper App F: SAC=20,
+        # DQN=100. BulletArm auto-resets on done.
+        target_episodes = int(self.cfg.warmup_episodes)
+        completed_episodes = 0
+        B = self.train_env.batch_size
+        print(
+            f"[warmup] collecting {target_episodes} expert episodes "
+            f"across {B} parallel envs"
+        )
+        while completed_episodes < target_episodes:
             act = self._warmup_action(self._state, self._obs)
             step = self.train_env.step(act.physical)
             self.buffer.push(
@@ -115,20 +126,26 @@ class BaseTrainer(ABC):
                 step.done,
             )
             self._state, self._obs = step.state, step.obs
-        print(f"[warmup] done, buffer size = {len(self.buffer)}")
+            completed_episodes += int(step.done.sum().item())
+        print(
+            f"[warmup] done, collected {completed_episodes} expert episodes, "
+            f"buffer size = {len(self.buffer)}"
+        )
 
     def _evaluate(self) -> Dict[str, float]:
         # Deterministic rollouts on a separate EnvWrapper so training rollout state isn't clobbered.
         # Paper (Wang et al. ICLR 2022) y-axis is *discounted* eval return, so
-        # we keep the per-env reward trace and fold it with γ on episode end.
+        # we keep the per-env reward trace and fold it with gamma on episode end.
         state, obs = self.eval_env.reset()
         Be = self.eval_env.batch_size
         gamma = self.cfg.gamma
 
         traces: List[List[float]] = [[] for _ in range(Be)]
         ep_len = torch.zeros(Be)
+        ep_success = [False] * Be
         disc_returns: List[float] = []
         lengths: List[float] = []
+        successes: List[bool] = []
 
         while len(disc_returns) < self.cfg.eval_episodes:
             act = self.agent.select_action(state, obs, deterministic=True)
@@ -137,21 +154,28 @@ class BaseTrainer(ABC):
 
             for i in range(Be):
                 traces[i].append(float(step.reward[i].item()))
+                # Latch success if the env ever reports it mid-episode.
+                if step.success is not None and step.success[i].item() > 0.5:
+                    ep_success[i] = True
                 if step.done[i].item() > 0.5:
-                    # Reverse fold: R_t = r_t + γ·R_{t+1}.
+                    # Reverse fold: R_t = r_t + gamma*R_{t+1}.
                     R = 0.0
                     for r in reversed(traces[i]):
                         R = r + gamma * R
                     disc_returns.append(R)
                     lengths.append(ep_len[i].item())
+                    successes.append(ep_success[i])
                     traces[i] = []
                     ep_len[i] = 0.0
+                    ep_success[i] = False
                     if len(disc_returns) >= self.cfg.eval_episodes:
                         break
             state, obs = step.state, step.obs
 
-        # Sparse rewards in {0, 1}, so disc_return > 0 iff success was reached.
-        success_rate = float(np.mean([1.0 if R > 0 else 0.0 for R in disc_returns]))
+        # BulletArm and MS3 both populate step.success now, so this is valid
+        # across backends. BulletArm sets it from reward>0 (sparse {0,1}),
+        # MS3 pulls info['success'] from the task's internal predicate.
+        success_rate = float(np.mean([1.0 if s else 0.0 for s in successes]))
         return {
             "eval/return_disc_mean": float(np.mean(disc_returns)),
             "eval/success_rate": success_rate,
@@ -226,20 +250,26 @@ class BaseTrainer(ABC):
 
     def _train_loop(self) -> None:
         # 100-episode rolling window matches Wang et al. utils/logger.py:107.
-        # Warmup episodes aren't seeded in (expert returns would inflate the early curve).
+        # Warmup episodes aren't seeded in (expert returns inflate the early curve).
+        #
+        # global_step counts update iterations, matching the paper repo's
+        # logger.num_training_steps (main.py:46) and the x-axis on figs 6/7/8.
+        # One iter = one env.step cycle + n_updates_per_step gradient updates.
         cfg = self.cfg
         B = self.train_env.batch_size
+        step_per_iter = int(cfg.n_updates_per_step)
 
-        # The `% cadence < B` fire trick is only deterministic when B
-        # divides each cadence. Enforce up front.
+        # Cadences must be multiples of step_per_iter so they fire inside the
+        # `% cadence < step_per_iter` window. For UTD=1 this is any int.
         for cadence_name, cadence in (
             ("log_every", cfg.log_every),
             ("eval_every", cfg.eval_every),
             ("ckpt_every", cfg.ckpt_every),
         ):
-            if cadence % B != 0:
+            if cadence % step_per_iter != 0:
                 raise ValueError(
-                    f"{cadence_name}={cadence} must be a multiple of batch size B={B}"
+                    f"{cadence_name}={cadence} must be a multiple of "
+                    f"n_updates_per_step={step_per_iter}"
                 )
 
         ep_return = torch.zeros(B)
@@ -291,12 +321,15 @@ class BaseTrainer(ABC):
                 for k, v in metrics.items():
                     loss_accum[k].append(v)
 
-            # Up to B-1 overshoot on the final iter is fine; matches Wang et al. main.py:270.
+            # Advance by update count, not env-step-worker count. Paper repo
+            # (main.py:46 logger.num_training_steps += 1) counts exactly this:
+            # one gradient step increments the training-step counter by one.
             self._state, self._obs = step.state, step.obs
-            self.global_step += B
+            self.global_step += step_per_iter
 
-            # Cadenced log/eval/ckpt via the `% cadence < B` trick.
-            if self.global_step % cfg.log_every < B:
+            # Cadenced log/eval/ckpt. `< step_per_iter` captures the single
+            # boundary crossing per iter (= `== 0 (mod cadence)` for UTD=1).
+            if self.global_step % cfg.log_every < step_per_iter:
                 now = time.time()
                 window_steps = self.global_step - sps_anchor_step
                 window_secs = max(now - sps_anchor_time, 1e-9)
@@ -319,12 +352,12 @@ class BaseTrainer(ABC):
                 sps_anchor_step = self.global_step
                 sps_anchor_time = now
 
-            if self.global_step % cfg.eval_every < B:
+            if self.global_step % cfg.eval_every < step_per_iter:
                 eval_metrics = self._evaluate()
                 self.logger.log_scalars(eval_metrics, step=self.global_step)
                 if eval_metrics["eval/success_rate"] > self.best_success:
                     self.best_success = eval_metrics["eval/success_rate"]
                     self._save_policy("best")
 
-            if self.global_step % cfg.ckpt_every < B:
+            if self.global_step % cfg.ckpt_every < step_per_iter:
                 self._save_policy("last")

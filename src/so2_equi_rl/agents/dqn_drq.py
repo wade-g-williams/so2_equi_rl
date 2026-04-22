@@ -3,7 +3,7 @@ shift-augmented copies of next_obs and the TD loss over M shift-augmented
 copies of obs. Per-row shift is independent across (copy, row); copies
 are fused into one (n*B, ...) tensor op.
 
-Paper §E: random ±4 pixel shift. Action is NOT augmented, since pixel shift
+Paper sec E: random +/-4 pixel shift. Action is NOT augmented, since pixel shift
 doesn't change world-frame delta actions.
 """
 

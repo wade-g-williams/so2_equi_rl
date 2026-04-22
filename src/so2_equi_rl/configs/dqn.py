@@ -15,7 +15,9 @@ class DQNConfig(TrainConfig):
     # repo's parameters.py argparse defaults differ (bs=64) but training runs
     # reported in the paper used the Table 8 values.
     total_steps: int = 20_000
-    warmup_steps: int = 5_000  # ~100 expert episodes at max_steps=50
+    warmup_steps: int = 5_000  # kept for backward compat, superseded below
+    # Paper sec 6.1: DQN warmup is 100 episodes.
+    warmup_episodes: int = 100
     batch_size: int = 32
     buffer_capacity: int = 100_000
 
@@ -33,15 +35,17 @@ class DQNConfig(TrainConfig):
     n_z: int = 3
     n_theta: int = 3
 
-    # Action-grid step sizes per paper text (Wang et al. 2022 §6.1):
-    #   A_xy = {(x,y) | x,y ∈ {-0.05m, 0m, 0.05m}}
+    # Action-grid step sizes per paper text (Wang et al. 2022 sec 6.1):
+    #   A_xy = {(x,y) | x,y in {-0.05m, 0m, 0.05m}}
     #   A_z  = {-0.02m, 0m, 0.02m}
-    #   A_θ  = {-π/16, 0, π/16}
-    # Paper runs dx=dy=dpos and a separate, smaller dz. The paper repo's
-    # argparse defaults match here (dpos=0.05); earlier internal runs used
-    # dpos=0.02 which diverged from paper text.
-    # p_range is the closed gripper interval the discrete p indices map onto.
-    dpos: float = 0.05
+    #   A_theta  = {-pi/16, 0, pi/16}
+    # Paper text sec 6.1 claims A_xy step = 0.05, but every paper repo DQN
+    # command in README uses `--dpos=0.02` (binds dx=dy=dz=dpos at
+    # create_agent.py:35). Fig 6 curves were produced with dpos=0.02;
+    # text appears to have a typo, no code path can produce A_xy != A_z.
+    # dpos=0.05 is too coarse for Object Picking (5cm step over a 5cm
+    # cube overshoots; 2cm step gives the finer control paper actually uses).
+    dpos: float = 0.02
     dz: float = 0.02
     drot: float = math.pi / 16
     p_range: Tuple[float, float] = (0.0, 1.0)
@@ -54,10 +58,15 @@ class DQNConfig(TrainConfig):
     # None = disabled (matches paper repo).
     grad_clip_norm: Optional[float] = None
 
-    # Linear epsilon decay over explore_steps env steps.
-    init_eps: float = 1.0
+    # Epsilon-greedy schedule. Paper repo runs DQN with `--explore=0`
+    # (parameters.py:35), which makes LinearSchedule return final_eps=0.0
+    # from step 0: no explicit eps-greedy noise. Early exploration comes
+    # from the untrained Q-net's near-random argmax plus the 100-episode
+    # expert warmup. An earlier init_eps=1.0 decayed 1.0 -> 0.0 uniform
+    # random, which diluted the expert-demo signal for the first ~10k updates.
+    init_eps: float = 0.0
     final_eps: float = 0.0
-    explore_steps: int = 10_000
+    explore_steps: int = 1  # irrelevant when init_eps == final_eps
 
     # UTD ratio. 1 = standard DQN.
     n_updates_per_step: int = 1

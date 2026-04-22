@@ -1,7 +1,7 @@
 """RAD-DQN. Subclass of DQNAgent that applies a random crop to (obs,
 next_obs) and runs the vanilla DQN update on the augmented transition.
 
-Paper §E: RAD uses random crop (142x142 -> 128x128). Action is NOT
+Paper sec E: RAD uses random crop (142x142 -> 128x128). Action is NOT
 augmented, since pixel translation doesn't change world-frame delta actions.
 """
 

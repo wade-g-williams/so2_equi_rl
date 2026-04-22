@@ -32,12 +32,15 @@ from helping_hands_rl_envs import env_factory  # noqa: E402, must follow the pat
 # callers keep working.
 from so2_equi_rl.envs import EnvStep  # noqa: E402, F401
 
-# Paper's workspace.
+# Paper's workspace. Paper sec C: 0.4m x 0.4m x 0.24m. Paper repo
+# parameters.py:100-102 sets z = [0.01, 0.25] (= 0.24m). Our previous
+# z = [0.00, 1.00] gave BulletArm a 1.0m soft bound that silently let
+# objects and the gripper occupy positions paper runs never see.
 _DEFAULT_WORKSPACE = np.asarray(
     [
-        [0.25, 0.65],  # x: table's long axis
-        [-0.20, 0.20],  # y: across the table (symmetric around the robot base)
-        [0.00, 1.00],  # z: vertical, positive = up
+        [0.25, 0.65],  # x: table's long axis, 0.4m
+        [-0.20, 0.20],  # y: across the table, 0.4m (symmetric around robot base)
+        [0.01, 0.25],  # z: vertical, 0.24m (paper spec)
     ],
     dtype=np.float32,
 )
@@ -154,17 +157,16 @@ class EnvWrapper:
         if self._is_single:
             actions_np = actions_np[0]
 
-        # auto_reset=True so when an episode ends, the runner immediately
-        # resets the env and returns the post-reset obs. Without this the
-        # env sits in a terminal state and every subsequent step returns
-        # done=True after one tick. See close_loop_env.py step(). The
-        # symptom is eval/length_mean == 10.8 (one 50-step episode + four
-        # single-tick ghost episodes averaged to 10.8). BulletArm's
-        # MultiRunner supports this via the 'step_auto_reset' IPC cmd;
-        # SingleRunner was patched to match.
+        # SingleRunner.step() silently drops the auto_reset kwarg (runner.py:419)
+        # while MultiRunner honors it. Without a reset the env sits terminal,
+        # every step returns done=True reward=0, the buffer fills with ghosts,
+        # V(s) collapses to 0, no learning. Emulate MultiRunner's semantics
+        # here: reset on done when single.
         (states, _in_hand, obs), rewards, dones = self._runner.step(
             actions_np, auto_reset=True
         )
+        if self._is_single and bool(dones):
+            states, _in_hand, obs = self._runner.reset()
 
         states_t, obs_t = self._to_batched_obs(states, obs)
 
@@ -176,11 +178,14 @@ class EnvWrapper:
             rewards_np = np.asarray(rewards, dtype=np.float32)
             dones_np = np.asarray(dones, dtype=np.float32)
 
+        # BulletArm rewards are sparse {0, 1}; success iff reward is 1.
+        success_np = (rewards_np > 0.5).astype(np.float32)
         return EnvStep(
             state=states_t,
             obs=obs_t,
             reward=torch.from_numpy(rewards_np),
             done=torch.from_numpy(dones_np),
+            success=torch.from_numpy(success_np),
         )
 
     def get_expert_action(self) -> torch.Tensor:

@@ -1,13 +1,10 @@
 """make_env() dispatches to the right backend (BulletArm or ManiSkill)
-from a TrainConfig so the train_*.py scripts stay backend-agnostic.
+from a TrainConfig, so train_*.py scripts stay backend-agnostic.
 
-The hhe __file__ patch lives at the top of envs/wrapper.py; importing
-this __init__ no longer forces a helping_hands_rl_envs install, which
-lets the ms3 env run these scripts without BulletArm in scope.
-
-EnvStep is the shared step-return type for both backends. It lives here
-(not in wrapper.py) so importing it from maniskill_wrapper.py does not
-drag the BulletArm-only helping_hands_rl_envs import into ms3 envs.
+EnvStep lives here rather than in wrapper.py so that maniskill_wrapper.py
+can import it without dragging in helping_hands_rl_envs. The hhe __file__
+patch that wrapper.py needs also stays out of this __init__'s import
+path, so ms3-only envs don't need hhe installed.
 """
 
 from typing import NamedTuple
@@ -16,14 +13,15 @@ import torch
 
 
 class EnvStep(NamedTuple):
-    """Return shape for env.step in both backends. Positional order
-    matches the 4-tuple unpacking trainers expect: state, obs, reward, done.
+    """Return shape for env.step in both backends. Trainers access fields
+    by attribute, not positional unpacking, so adding fields is safe.
     """
 
     state: torch.Tensor
     obs: torch.Tensor
     reward: torch.Tensor
     done: torch.Tensor
+    success: torch.Tensor = None  # task-internal success, (B,) float32 0/1
 
 
 def make_env(cfg, *, seed: int, num_processes: int, num_envs: int = 1):

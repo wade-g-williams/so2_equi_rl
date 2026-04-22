@@ -1,12 +1,10 @@
-"""FERM-SAC. Subclass of SACAgent with one shared CNN encoder (actor +
-critic), a Polyak momentum key encoder, and a CURL-style InfoNCE loss
-over two random-crop views (142x142 -> 128x128, pad=7). Shared encoder
-trains from the critic TD loss and the InfoNCE loss; actor loss is
-detached on both paths.
+"""FERM-SAC. Shared CNN encoder (actor + critic), Polyak momentum key
+encoder, CURL InfoNCE over two random-crop views (pad=7, 142 -> 128).
+Encoder trains from critic TD and InfoNCE; actor loss is detached on
+both paths.
 
-Two Polyak rates: cfg.tau (slow) for the critic target, cfg.curl_tau
-(fast) for the key encoder. Key side is not bootstrapped, so it can
-chase the online encoder harder.
+Two Polyak rates: cfg.tau for the critic target, cfg.curl_tau for the
+key encoder (faster, since the key side isn't bootstrapped).
 """
 
 import copy
@@ -92,15 +90,21 @@ class SACFERMAgent(SACAgent):
         for p in self.k_encoder.parameters():
             p.requires_grad_(False)
 
-        # CURL bilinear projection. logits[i, j] = <q_i, W @ k_j>. Orthogonal
-        # init keeps initial logits O(1) so cross-entropy doesn't saturate at step 0.
-        self.W = nn.Parameter(
-            torch.empty(
-                self.q_encoder.output_dim,
-                self.q_encoder.output_dim,
-                device=self.device,
-            )
+        # Paper sec E: contrastive encoder size = 50. Project encoder output
+        # (q_encoder.output_dim = n_hidden for CNN) down to z_dim before the
+        # bilinear product. k_projection is a momentum copy at curl_tau.
+        self.z_dim = int(cfg.z_dim)
+        self.q_projection = nn.Linear(self.q_encoder.output_dim, self.z_dim).to(
+            self.device
         )
+        self.k_projection = copy.deepcopy(self.q_projection)
+        for p in self.k_projection.parameters():
+            p.requires_grad_(False)
+
+        # CURL bilinear: logits[i, j] = <q_i, W @ k_j>, W is z_dim x z_dim.
+        # Orthogonal init keeps initial logits O(1) so cross-entropy doesn't
+        # saturate at step 0.
+        self.W = nn.Parameter(torch.empty(self.z_dim, self.z_dim, device=self.device))
         nn.init.orthogonal_(self.W)
 
         self._init_alpha(cfg)
@@ -116,10 +120,15 @@ class SACFERMAgent(SACAgent):
         self.actor_optim = torch.optim.Adam(self._actor_head_params, lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
         # Separate encoder_optim so InfoNCE and TD can run different LRs.
-        # The two losses have different gradient scales.
+        # The two losses have different gradient scales. Includes the query
+        # projection since InfoNCE must train it alongside the encoder.
+        self._contrastive_params = (
+            list(self.q_encoder.parameters())
+            + list(self.q_projection.parameters())
+            + [self.W]
+        )
         self.encoder_optim = torch.optim.Adam(
-            list(self.q_encoder.parameters()) + [self.W],
-            lr=cfg.encoder_lr,
+            self._contrastive_params, lr=cfg.encoder_lr
         )
 
         # CPU generator. random_crop uses torch.randint which needs cpu.
@@ -182,7 +191,7 @@ class SACFERMAgent(SACAgent):
         alpha_loss.backward()
         self.alpha_optim.step()
 
-        # InfoNCE step. Paper §E FERM: two independent random crops
+        # InfoNCE step. Paper sec E FERM: two independent random crops
         # (142x142 -> 128x128) for the query and key. Pulls (q, k) from the
         # same row together and pushes other pairings apart.
         B = batch.obs.shape[0]
@@ -199,14 +208,16 @@ class SACFERMAgent(SACAgent):
         q_obs_tiled = tile_state(q_obs, batch.state)
         k_obs_tiled = tile_state(k_obs, batch.state)
 
-        # Key side is frozen via requires_grad=False; no_grad also drops key activations.
-        q_feat = self.q_encoder(q_obs_tiled).view(B, -1)
+        # Key side is frozen via requires_grad=False; no_grad also drops key
+        # activations. Projections map encoder output (q_encoder.output_dim)
+        # down to z_dim (paper sec E: FERM z_dim=50).
+        q_feat = self.q_projection(self.q_encoder(q_obs_tiled).view(B, -1))
         with torch.no_grad():
-            k_feat = self.k_encoder(k_obs_tiled).view(B, -1)
+            k_feat = self.k_projection(self.k_encoder(k_obs_tiled).view(B, -1))
 
         # Bilinear logits (B, B). Diagonal = positives, off-diagonal = negatives.
         # Row-max subtract for numerical stability, doesn't change cross-entropy.
-        Wk = torch.matmul(self.W, k_feat.t())  # (d, B)
+        Wk = torch.matmul(self.W, k_feat.t())  # (z_dim, B)
         logits = torch.matmul(q_feat, Wk) / self.curl_temperature  # (B, B)
         logits = logits - logits.max(dim=1, keepdim=True).values.detach()
         labels = torch.arange(B, device=self.device)
@@ -216,10 +227,7 @@ class SACFERMAgent(SACAgent):
         self.encoder_optim.zero_grad()
         (self.curl_lambda * infonce_loss).backward()
         if self.grad_clip_norm is not None:
-            nn.utils.clip_grad_norm_(
-                list(self.q_encoder.parameters()) + [self.W],
-                self.grad_clip_norm,
-            )
+            nn.utils.clip_grad_norm_(self._contrastive_params, self.grad_clip_norm)
         self.encoder_optim.step()
 
         # Two Polyak updates. critic_target at cfg.tau, k_encoder at cfg.curl_tau.
@@ -230,6 +238,13 @@ class SACFERMAgent(SACAgent):
                 p_target.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
 
             for p, p_k in zip(self.q_encoder.parameters(), self.k_encoder.parameters()):
+                p_k.mul_(1.0 - self.curl_tau).add_(p.data, alpha=self.curl_tau)
+
+            # k_projection tracks q_projection by the same Polyak rule. CURL
+            # convention keeps query and key projections in lockstep.
+            for p, p_k in zip(
+                self.q_projection.parameters(), self.k_projection.parameters()
+            ):
                 p_k.mul_(1.0 - self.curl_tau).add_(p.data, alpha=self.curl_tau)
 
         return {
@@ -252,6 +267,8 @@ class SACFERMAgent(SACAgent):
             "critic_target": self.critic_target.state_dict(),
             "q_encoder": self.q_encoder.state_dict(),
             "k_encoder": self.k_encoder.state_dict(),
+            "q_projection": self.q_projection.state_dict(),
+            "k_projection": self.k_projection.state_dict(),
             "W": self.W.detach().cpu(),
             "log_alpha": self.log_alpha.detach().cpu(),
             "actor_optim": self.actor_optim.state_dict(),
@@ -268,6 +285,8 @@ class SACFERMAgent(SACAgent):
         self.critic_target.load_state_dict(d["critic_target"])
         self.q_encoder.load_state_dict(d["q_encoder"])
         self.k_encoder.load_state_dict(d["k_encoder"])
+        self.q_projection.load_state_dict(d["q_projection"])
+        self.k_projection.load_state_dict(d["k_projection"])
         with torch.no_grad():
             self.W.copy_(d["W"].to(self.device))
             self.log_alpha.copy_(d["log_alpha"].to(self.device))

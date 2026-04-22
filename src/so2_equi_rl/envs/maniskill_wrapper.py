@@ -1,9 +1,8 @@
-"""ManiSkill 3 wrapper matching EnvWrapper's public API so trainers stay
+"""ManiSkill 3 wrapper. Matches EnvWrapper's public API so trainers stay
 backend-agnostic. Top-down narrow-FOV camera approximates an orthographic
-view so the rendered depth behaves like a heightmap (<1% edge distortion
-at the defaults in TrainConfig, small enough for the equivariant encoder
-to absorb). Physical 5-D action is [p, dx, dy, dz, dtheta] in BulletArm's
-pxyzr layout; _physical_to_ms3 below handles the remap into pd_ee_delta_pose.
+view (<1% edge distortion at TrainConfig defaults, small enough for the
+equi encoder to absorb). Physical action is pxyzr like BulletArm;
+_physical_to_ms3 remaps into pd_ee_delta_pose.
 """
 
 from __future__ import annotations
@@ -115,9 +114,7 @@ class ManiSkillWrapper:
         # cube position) which rgbd obs_mode doesn't include in `extra`.
         return self._env.unwrapped
 
-    # ------------------------------------------------------------------
-    # Public API, mirrors envs/wrapper.py:EnvWrapper
-    # ------------------------------------------------------------------
+    # Public API, mirrors envs/wrapper.py:EnvWrapper.
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
         obs_dict, _info = self._env.reset(seed=self.seed)
@@ -126,13 +123,23 @@ class ManiSkillWrapper:
 
     def step(self, actions: torch.Tensor) -> EnvStep:
         ms3_action = self._physical_to_ms3(actions.to(self._device).float())
-        obs_dict, rewards, terminated, truncated, _info = self._env.step(ms3_action)
+        obs_dict, rewards, terminated, truncated, info = self._env.step(ms3_action)
         self._last_obs = obs_dict
 
         state, obs = self._extract(obs_dict)
         done = (terminated | truncated).float().reshape(self.batch_size).cpu()
         reward = rewards.float().reshape(self.batch_size).cpu()
-        return EnvStep(state=state, obs=obs, reward=reward, done=done)
+
+        # Task-internal success predicate. MS3's dense/normalized_dense rewards
+        # are positive throughout the episode, so reward>0 does not imply
+        # success. info['success'] is authoritative.
+        success_raw = info.get("success")
+        if success_raw is None:
+            success = torch.zeros(self.batch_size, dtype=torch.float32)
+        else:
+            success = success_raw.float().reshape(self.batch_size).cpu()
+
+        return EnvStep(state=state, obs=obs, reward=reward, done=done, success=success)
 
     def get_expert_action(self) -> torch.Tensor:
         # Experts are registered per task via set_expert; fail loud if warmup would be a no-op.
@@ -150,9 +157,7 @@ class ManiSkillWrapper:
     def close(self) -> None:
         self._env.close()
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
+    # Internals.
 
     def _extract(self, obs_dict: Dict[str, Any]) -> Tuple[torch.Tensor, torch.Tensor]:
         # ManiSkill's base_camera depth is int16 millimeters from the
@@ -166,7 +171,7 @@ class ManiSkillWrapper:
         obs = height.cpu().reshape(self.batch_size, 1, self.obs_size, self.obs_size)
 
         # Gripper state. Panda's gripper occupies the last qpos slots;
-        # threshold the last finger (≈0.04 fully open, ≈0.0 fully closed).
+        # threshold the last finger (~0.04 fully open, ~0.0 fully closed).
         qpos = obs_dict["agent"]["qpos"]
         gripper_pos = qpos[:, -1]
         state = (
@@ -175,12 +180,10 @@ class ManiSkillWrapper:
         return state, obs
 
     def _physical_to_ms3(self, physical: torch.Tensor) -> torch.Tensor:
-        # Input layout (from SACAgent.decode_action): [p, dx, dy, dz, dtheta].
-        # Output layout (pd_ee_delta_pose): [dx, dy, dz, drx, dry, drz, gripper].
-        # Normalize physical deltas by the controller's configured bounds,
-        # clip so the controller doesn't see values outside its cube, and
-        # remap gripper conventions (BulletArm 0=open, 1=closed →
-        # ManiSkill +1=open, -1=closed).
+        # Input layout: pxyzr (from SACAgent.decode_action).
+        # Output layout: pd_ee_delta_pose = [dx, dy, dz, drx, dry, drz, gripper].
+        # Normalize deltas by controller bounds, clip to the cube, remap
+        # gripper (BulletArm 0=open, 1=closed -> MS +1=open, -1=closed).
         p = physical[:, 0:1]
         dxyz = physical[:, 1:4]
         dtheta = physical[:, 4:5]

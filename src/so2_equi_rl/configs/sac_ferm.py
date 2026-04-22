@@ -1,10 +1,9 @@
-"""FERM-SAC config. Adds CURL-style contrastive-loss knobs on top of
-SACConfig. Paper §E: FERM uses random crop (142x142 -> 128x128) for the
-InfoNCE views. Two tau fields: cfg.tau (slow) for the critic target,
-curl_tau (fast) for the key encoder.
+"""FERM-SAC config. CURL contrastive knobs on top of SACConfig. Paper sec
+E: random crop 142x142 -> 128x128 for the InfoNCE views; two tau fields so
+the key encoder can chase faster than the critic target.
 
-Paper §E also pretrains the contrastive encoder for 1.6k steps on expert
-data before SAC training starts. NOT yet implemented, expected gap from
+Paper sec E also pretrains the contrastive encoder for 1.6k steps on
+expert data before SAC starts. NOT yet implemented; expected gap from
 paper for the Block Pulling FERM result.
 """
 
@@ -29,6 +28,12 @@ class SACFERMConfig(SACConfig):
     # InfoNCE and TD gradients have different scales.
     encoder_lr: float = 1e-3
 
-    # Paper §E: random crop 142x142 -> 128x128, implemented as pad then
+    # Paper sec E: random crop 142x142 -> 128x128, implemented as pad then
     # random-crop-to-128 with pad=7 on both sides (128 + 14 = 142).
     ferm_pad: int = 7
+
+    # Contrastive latent dim. Paper sec E: size 50 (per Zhan et al. 2020).
+    # Encoder output (n_hidden=128 CNN, n_hidden*group_order=1024 Equi)
+    # projects down to z_dim before the bilinear product. Earlier bug had
+    # W at encoder_dim x encoder_dim, giving FERM too much capacity.
+    z_dim: int = 50

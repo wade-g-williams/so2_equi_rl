@@ -111,17 +111,14 @@ def pull_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
 
 
 def stack_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
-    # Stateless stack expert. Two branches selected by whether cubeA is
-    # currently being carried (proxy: cubeA xy tracks TCP tightly AND
-    # cubeA has been lifted off the table):
-    #   pick branch (not carried):
-    #     1. hover above cubeA, 2. descend + close gripper
-    #   place branch (carried):
-    #     1. hover above cubeB at stack height + clearance,
-    #     2. descend to stack pose, 3. release gripper
-    # Success requires `~is_cubeA_grasped`, so the gripper must open at
-    # the stack pose. StackCube is harder than PickCube/PullCube so the
-    # warmup success rate will be lower; that's fine for buffer priming.
+    # Stateless stack expert. Two branches, selected by whether cubeA is
+    # currently carried (cubeA xy close to TCP + cubeA lifted off table):
+    #   pick branch:  hover above cubeA, descend, close gripper.
+    #   place branch: hover above cubeB at stack height + clearance,
+    #                 descend to stack pose, release gripper.
+    # Success requires ~is_cubeA_grasped, so the gripper has to open at
+    # the stack pose. StackCube is harder than PickCube/PullCube so
+    # warmup success will be lower; fine for buffer priming.
     obs = wrapper._last_obs
     assert obs is not None, "reset() must run before get_expert_action"
 
@@ -130,7 +127,7 @@ def stack_cube_expert(wrapper: "ManiSkillWrapper") -> torch.Tensor:
     cubeB_xyz = wrapper.unwrapped.cubeB.pose.p
 
     # Carried: cubeA xy-tight to TCP AND cubeA lifted above resting height
-    # (cube_half_size = 0.02, so resting cube z ≈ 0.02; >0.05 means lifted).
+    # (cube_half_size = 0.02, so resting cube z ~ 0.02; >0.05 means lifted).
     tcp_to_A_xy = (tcp_xyz[:, 0:2] - cubeA_xyz[:, 0:2]).norm(dim=1)
     carried = (tcp_to_A_xy < 0.025) & (cubeA_xyz[:, 2] > 0.05)
 

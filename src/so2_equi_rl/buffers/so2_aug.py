@@ -1,19 +1,17 @@
-"""SO(2) data-augmentation helpers for the replay buffer.
+"""SO(2) replay-buffer aug (Wang et al. 2022 Fig 7). Every transition is
+stored K+1 times: once as-is, then K random-theta rotated copies. Rotation
+acts on (obs, next_obs, action[xy]); p, dz, dtheta are invariant (scalars
+or rotation deltas).
 
-Wang et al. 2022 Fig 7 training pipeline: every env transition is stored K+1
-times, once as-is, then K rotated copies with a fresh random angle per copy.
-The rotation applies to (obs, next_obs, action[xy]) as a rigid world rotation
-about the image center. Position deltas (dx, dy) rotate by R(theta);
-primitive/gripper (p), depth delta (z), and yaw delta (r) are invariant
-under world rotation (r is a rotation *delta*, not an absolute frame).
+rotate_xy uses the SAME theta as rotate_obs. Equi actor's irrep(1) output
+rotates by R(+theta) when input obs rotates by R(+theta), so the buffer's
+stored (obs, action) pairs have to match direction. An earlier probe that
+used the test rotate_bilinear helper disagreed; that helper has an
+opposite-direction affine and gave a misleading answer.
 
-Implementation notes
-- obs is a depth heightmap (C, H, W), float32. Rotation uses bilinear
-  grid_sample which is differentiable but we don't need gradients here;
-  we just want to stay on CPU + torch to avoid a scipy dependency.
-- Rotations are sampled uniformly in [-pi, pi].
-- xy are clipped to [-1, 1] after rotation (paper does the same; the buffer's
-  unscaled-action invariant requires it anyway).
+Stays on CPU + torch so there's no scipy dep. Thetas are uniform in [-pi,
+pi). xy is clipped to [-1, 1] after rotation to preserve the buffer's
+unscaled-action invariant.
 """
 
 import math
@@ -53,12 +51,14 @@ def rotate_obs(
     cos_t = thetas.cos()
     sin_t = thetas.sin()
 
-    # grid_sample expects the inverse transform (output -> input). For a
-    # rotation by +theta of the image, the inverse rotation is by -theta.
+    # affine_grid normalizes coords with y-axis-down, which flips one sign
+    # and cancels grid_sample's inverse-transform expectation. Net effect is
+    # that +theta in the affine matrix produces +theta CCW rotation in the
+    # caller frame, matching utils/augmentation.py and torch.rot90(k=1).
     theta_mat = torch.zeros(obs.shape[0], 2, 3, dtype=obs.dtype, device=obs.device)
     theta_mat[:, 0, 0] = cos_t
-    theta_mat[:, 0, 1] = sin_t
-    theta_mat[:, 1, 0] = -sin_t
+    theta_mat[:, 0, 1] = -sin_t
+    theta_mat[:, 1, 0] = sin_t
     theta_mat[:, 1, 1] = cos_t
 
     grid = F.affine_grid(theta_mat, obs.shape, align_corners=False)
@@ -101,6 +101,14 @@ def augment_transition_so2(
     obs_rot = rotate_obs(obs, thetas)
     next_obs_rot = rotate_obs(next_obs, thetas)
 
+    # Rotate xy by the SAME theta as obs. Verified empirically with the
+    # production rotate_obs against EquiActor output: actor's irrep(1)
+    # output rotates by R(+theta) when production rotate_obs rotates input
+    # by R(+theta), so the buffer's augmented (obs, action) pairs must
+    # agree in direction. (Earlier speculation flipped the sign based on
+    # a probe that used tests/_rotation_helpers.rotate_bilinear, which
+    # rotates in the OPPOSITE direction from production rotate_obs and
+    # gave a misleading answer.)
     xy_rot = rotate_xy(action[:, 1:3], thetas).clamp(-1.0, 1.0)
     action_rot = action.clone()
     action_rot[:, 1:3] = xy_rot

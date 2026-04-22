@@ -3,7 +3,7 @@ shift-augmented copies of next_obs and the critic+actor losses over M
 shift-augmented copies of obs. Per-row shift is independent across
 (copy, row); copies are fused into one (n*B, ...) tensor op.
 
-Paper §E + Kostrikov et al. 2020: DrQ uses random ±4 pixel shift.
+Paper sec E + Kostrikov et al. 2020: DrQ uses random +/-4 pixel shift.
 Pixel shift doesn't change world-frame delta actions, so action is NOT
 augmented.
 """

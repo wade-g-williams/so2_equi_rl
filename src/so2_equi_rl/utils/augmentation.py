@@ -1,14 +1,13 @@
 """Image-space augmentation helpers for replay-sampled batches.
 
 random_shift is the DrQ primitive (pad + random HxW crop, default pad=4).
-random_crop is the RAD/CURL/FERM primitive, same mechanics with pad=7
+random_crop is the RAD/CURL/FERM primitive, same mechanics at pad=7
 (128+14=142 effective, cropped back to 128). Neither rotates the action
-because pixel translation does not change world-frame delta actions.
+since pixel translation doesn't change world-frame deltas.
 
-rotate_obs, rotate_action_dxy, sample_so2_angles, and random_so2_augment
-stay here for backward-compatibility with tests and earlier equivariance
-experiments; the paper-faithful pipeline no longer uses them on the agent
-side (replay-buffer SO(2) aug lives in buffers/so2_aug.py).
+rotate_obs, rotate_action_dxy, sample_so2_angles, random_so2_augment stay
+here for backward-compat with tests and older equivariance experiments;
+the paper-faithful SO(2) aug now lives in buffers/so2_aug.py.
 """
 
 import math
@@ -130,7 +129,7 @@ def random_shift(
     """Paper-style DrQ random shift: zero-pad by `pad` pixels on each side,
     then take a random HxW crop from the padded (H+2*pad)x(W+2*pad) tensor.
 
-    Wang et al. 2022 §E: "Shift baselines use random shift of ±4 pixels."
+    Wang et al. 2022 sec E: "Shift baselines use random shift of +/-4 pixels."
     Matches Kostrikov et al. 2020 (DrQ) ShiftsAug on 128x128 heightmaps.
 
     obs: (B, C, H, W), different per-row shifts
@@ -167,13 +166,13 @@ def random_crop(
     """Paper-style RAD/CURL/FERM random crop: zero-pad then take a HxW crop.
 
     Paper used 142x142 raw obs cropped to 128x128; we already render at
-    128x128, so pad=7 gives (128+14)=142 effective → 128 crop, matching.
+    128x128, so pad=7 gives (128+14)=142 effective -> 128 crop, matching.
 
     obs: (B, C, H, W)
     returns: (B, C, H, W)
     """
     # Mechanically identical to random_shift (pad + random-crop-to-HxW) but
-    # exposed under the semantic paper uses in §E ("random crop" for RAD,
+    # exposed under the semantic paper uses in sec E ("random crop" for RAD,
     # CURL, FERM; "random shift" for DrQ). Same underlying op, different
     # pad sizes (paper uses pad=7 for crop, pad=4 for shift).
     return random_shift(obs, pad=pad, generator=generator)

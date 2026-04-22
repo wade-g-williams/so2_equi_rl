@@ -1,4 +1,4 @@
-"""DQN-CURL config. Paper §E: CURL uses random crop (142x142 -> 128x128)
+"""DQN-CURL config. Paper sec E: CURL uses random crop (142x142 -> 128x128)
 for the two contrastive views. Two tau fields: cfg.tau (slow) for the
 DQN target net, curl_tau (fast) for the key encoder.
 
@@ -27,5 +27,5 @@ class DQNCURLConfig(DQNConfig):
     # InfoNCE and TD gradients have different scales.
     encoder_lr: float = 1e-3
 
-    # Paper §E: random crop 142 -> 128, implemented as pad=7 + random-crop-to-128.
+    # Paper sec E: random crop 142 -> 128, implemented as pad=7 + random-crop-to-128.
     curl_pad: int = 7
