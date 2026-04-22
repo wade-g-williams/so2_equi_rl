@@ -142,8 +142,12 @@ class BaseTrainer(ABC):
 
         traces: List[List[float]] = [[] for _ in range(Be)]
         ep_len = torch.zeros(Be)
-        ep_success = [False] * Be
+        # None until success fires; then holds the t-index (0-based) of the
+        # first step step.success latched true. Used to compute gamma^t, the
+        # reward-mode-agnostic paper-style discounted return.
+        ep_success_step: List[Optional[int]] = [None] * Be
         disc_returns: List[float] = []
+        disc_success_per_ep: List[float] = []
         lengths: List[float] = []
         successes: List[bool] = []
 
@@ -154,9 +158,14 @@ class BaseTrainer(ABC):
 
             for i in range(Be):
                 traces[i].append(float(step.reward[i].item()))
-                # Latch success if the env ever reports it mid-episode.
-                if step.success is not None and step.success[i].item() > 0.5:
-                    ep_success[i] = True
+                # Record the first-success step only; later successes in the
+                # same episode are ignored so gamma^t stays monotone.
+                if (
+                    step.success is not None
+                    and step.success[i].item() > 0.5
+                    and ep_success_step[i] is None
+                ):
+                    ep_success_step[i] = int(ep_len[i].item()) - 1
                 if step.done[i].item() > 0.5:
                     # Reverse fold: R_t = r_t + gamma*R_{t+1}.
                     R = 0.0
@@ -164,10 +173,15 @@ class BaseTrainer(ABC):
                         R = r + gamma * R
                     disc_returns.append(R)
                     lengths.append(ep_len[i].item())
-                    successes.append(ep_success[i])
+                    # Paper-style metric: gamma^t_success if solved, else 0.
+                    # Reward-mode-agnostic, directly comparable across sparse
+                    # and dense runs and across backends.
+                    t = ep_success_step[i]
+                    disc_success_per_ep.append(gamma**t if t is not None else 0.0)
+                    successes.append(t is not None)
                     traces[i] = []
                     ep_len[i] = 0.0
-                    ep_success[i] = False
+                    ep_success_step[i] = None
                     if len(disc_returns) >= self.cfg.eval_episodes:
                         break
             state, obs = step.state, step.obs
@@ -178,6 +192,7 @@ class BaseTrainer(ABC):
         success_rate = float(np.mean([1.0 if s else 0.0 for s in successes]))
         return {
             "eval/return_disc_mean": float(np.mean(disc_returns)),
+            "eval/disc_success_mean": float(np.mean(disc_success_per_ep)),
             "eval/success_rate": success_rate,
             "eval/length_mean": float(np.mean(lengths)),
         }
