@@ -19,6 +19,11 @@
 
 set -u
 
+# Conda env holding torch + mani_skill + sapien + the repo (editable).
+# Laptop: ms3_equi (separate env). Helper: equi_rl (mani_skill installed on top).
+# Override with:  CONDA_ENV=equi_rl ./scripts/run_equi_pickcube_dqn.sh
+CONDA_ENV=${CONDA_ENV:-ms3_equi}
+
 MATRIX_DIR=/home/wadewilliams/Dev/so2_equi_rl/outputs/matrix
 MARKER_DIR=$MATRIX_DIR/.markers
 REPO=/home/wadewilliams/Dev/so2_equi_rl
@@ -63,7 +68,7 @@ run_cell() {
   local log="$log_dir/launch.log"
   echo "[equi-dqn] $(date +%H:%M:%S) running $tag"
 
-  "${ISOLATE[@]}" conda run -n ms3_equi python -m scripts.train_dqn \
+  "${ISOLATE[@]}" conda run -n "$CONDA_ENV" python -m scripts.train_dqn \
     --env-name EquiPickCube-v1 --env-backend maniskill \
     --network "$network" --num-envs 5 --seed "$seed" --total-steps 20000 \
     --output-dir outputs/matrix --run-name "$tag" \
