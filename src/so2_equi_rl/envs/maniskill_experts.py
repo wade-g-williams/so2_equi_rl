@@ -165,6 +165,7 @@ EXPERTS: Dict[str, Callable[["ManiSkillWrapper"], torch.Tensor]] = {
     "PickCube-v1": pick_cube_expert,
     "PullCube-v1": pull_cube_expert,
     "StackCube-v1": stack_cube_expert,
+    "EquiPickCube-v1": pick_cube_expert,
 }
 
 
