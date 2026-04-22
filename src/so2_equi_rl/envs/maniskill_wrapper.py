@@ -83,6 +83,7 @@ class ManiSkillWrapper:
             cfg.env_name,
             num_envs=num_envs,
             obs_mode="rgbd",
+            reward_mode=cfg.ms3_reward_mode,
             control_mode=cfg.ms3_control_mode,
             sim_backend=cfg.ms3_sim_backend,
             sensor_configs=dict(

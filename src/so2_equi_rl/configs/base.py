@@ -27,6 +27,11 @@ class TrainConfig:
     ms3_depth_max: float = 0.4  # meters, depth clip
     ms3_control_mode: str = "pd_ee_delta_pose"
     ms3_sim_backend: str = "gpu"
+    # MS3 reward mode. Defaults to dense (proximity + grasp + lift bonuses,
+    # MS3 native) so baselines have the signal the MS3 benchmark assumes.
+    # Flip to 'sparse' for direct {0, 1} parity with the paper's BulletArm
+    # regime.
+    ms3_reward_mode: str = "dense"
 
     # Training budget and cadence.
     total_steps: int = 50_000
@@ -34,10 +39,13 @@ class TrainConfig:
     batch_size: int = 64
     buffer_capacity: int = 100_000
 
-    # Cadences in env steps.
-    log_every: int = 100
-    eval_every: int = 5_000
-    ckpt_every: int = 10_000
+    # Cadences in env steps. All multiples of 160 (LCM of likely batch
+    # sizes: BulletArm num_processes 1/5, MS3 num_envs 8/16/32). The
+    # trainer enforces cadence % batch_size == 0, so these must stay
+    # divisible by whatever batch size the env ends up with.
+    log_every: int = 160
+    eval_every: int = 4_800
+    ckpt_every: int = 9_600
 
     # Eval rollouts use a separate EnvWrapper seeded from eval_seed so they
     # don't perturb the training env's RNG.
