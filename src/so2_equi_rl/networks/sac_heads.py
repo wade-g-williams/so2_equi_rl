@@ -1,8 +1,7 @@
 """SAC actor and critic heads for the 5-D pxyzr action.
 
-Equi variants: (dx, dy) transform as irrep(1) under the C_N action on the
-heightmap and rotate with the obs; (p, dz, dtheta) are trivial. Critics
-are C_N-invariant under the joint (obs, action) action.
+Equi variant: (dx, dy) are irrep(1) and rotate with the obs; (p, dz, dtheta)
+are trivial. Critics are C_N-invariant under joint rotation of (obs, action).
 """
 
 import math
@@ -12,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-from so2_equi_rl.networks._equiv_compat import enn
+from so2_equi_rl.networks.equiv_compat import enn
 from so2_equi_rl.networks.encoders import CNNEncoder, EquiEncoder, irrep1_multiplicity
 
 LOG_SIG_MIN = -20.0
@@ -32,23 +31,19 @@ class SACGaussianPolicyBase(torch.nn.Module):
         x_t = normal.rsample()
         y_t = torch.tanh(x_t)
 
-        # Tanh change-of-variables on log-prob, in the stable form
-        # 2 * (log 2 - x - softplus(-2x)) to avoid precision loss near |tanh(x)| ~ 1.
+        # Stable tanh log-prob correction: 2*(log 2 - x - softplus(-2x)).
         log_prob = normal.log_prob(x_t)
         log_prob = log_prob - 2.0 * (math.log(2.0) - x_t - F.softplus(-2.0 * x_t))
         log_prob = log_prob.sum(dim=1, keepdim=True)
 
-        # tanh(mean) is the deterministic eval-time action.
+        # tanh(mean) is the deterministic eval action.
         mean_tanh = torch.tanh(mean)
 
         return y_t, log_prob, mean_tanh
 
 
 class EquiActor(SACGaussianPolicyBase):
-    """C_N-equivariant SAC policy. (dx, dy) means go through irrep(1);
-    (p, dz, dtheta) means and all 5 log_stds are trivial. Caller owns
-    encoder lifetime so actor and critic can't share weights.
-    """
+    """C_N-equivariant SAC policy. (dx, dy) means are irrep(1); others trivial."""
 
     def __init__(
         self,
@@ -69,8 +64,7 @@ class EquiActor(SACGaussianPolicyBase):
         n_rho1 = irrep1_multiplicity(encoder.group_order)
         gspace = encoder.gspace
 
-        # Final 1x1 head. n_rho1 irrep(1) fields cover (dx, dy); 8 trivial
-        # fields cover 3 invariant means (p, dz, dtheta) and all 5 log_stds.
+        # n_rho1 irrep(1) for (dx, dy) means; 8 trivial for (p, dz, dtheta) means + 5 log_stds.
         head_out_type = enn.FieldType(
             gspace,
             n_rho1 * [gspace.irrep(1)] + 8 * [gspace.trivial_repr],
@@ -101,9 +95,7 @@ class EquiActor(SACGaussianPolicyBase):
 
 
 class EquiCritic(torch.nn.Module):
-    """C_N-invariant twin-Q critic. One shared EquiEncoder drives both Q
-    heads with independent proj and mix layers on top.
-    """
+    """C_N-invariant twin-Q critic. Shared EquiEncoder, two independent proj+mix heads."""
 
     def __init__(
         self,
@@ -124,14 +116,13 @@ class EquiCritic(torch.nn.Module):
         n_rho1 = irrep1_multiplicity(encoder.group_order)
         gspace = encoder.gspace
 
-        # Action field type. Mirrors the actor head's layout, read the
-        # other way since action is an INPUT to the critic.
+        # Action is INPUT to the critic; mirrors the actor head layout.
         self.action_type = enn.FieldType(
             gspace,
             n_rho1 * [gspace.irrep(1)] + 3 * [gspace.trivial_repr],
         )
 
-        # Concat FieldType: summing rep lists is how e2cnn builds it.
+        # Concat FieldType built by summing rep lists (e2cnn convention).
         self.merged_type = enn.FieldType(
             gspace,
             list(self.action_type.representations)
@@ -148,7 +139,7 @@ class EquiCritic(torch.nn.Module):
             encoder.output_type, self.action_type, kernel_size=1, padding=0
         )
 
-        # Two independent mixers from the merged feature to a single trivial scalar.
+        # Two independent mixers from the merged feature to a trivial scalar.
         self.mix_1 = enn.R2Conv(
             self.merged_type, self.q_out_type, kernel_size=1, padding=0
         )
@@ -157,14 +148,13 @@ class EquiCritic(torch.nn.Module):
         )
 
     def _wrap_action(self, action: torch.Tensor) -> enn.GeometricTensor:
-        # Reorder pxyzr -> (dx, dy, p, dz, dtheta) so irrep(1) sits at the
-        # front of the channel axis where action_type expects them.
+        # Reorder pxyzr -> (dx, dy, p, dz, dtheta) so irrep(1) sits at the front.
         p = action[:, 0:1]
         dxy = action[:, 1:3]
         dz_dtheta = action[:, 3:5]
         reshuffled = torch.cat([dxy, p, dz_dtheta], dim=1)
 
-        # 1x1 spatial to line up with the encoder's 1x1 output.
+        # 1x1 spatial to match the encoder's 1x1 output.
         spatial = reshuffled.view(action.shape[0], 5, 1, 1)
         return enn.GeometricTensor(spatial, self.action_type)
 
@@ -193,13 +183,7 @@ class EquiCritic(torch.nn.Module):
 
 
 class CNNActor(SACGaussianPolicyBase):
-    """Plain-CNN SAC policy. Two parallel Linear heads off the flattened
-    encoder output (no hidden MLP), matching the paper's SACGaussianPolicy.
-
-    detach_encoder is for FERM-SAC where the encoder is shared with the
-    critic and trains from TD + InfoNCE only. Default False leaves
-    vanilla, DrQ, and RAD untouched.
-    """
+    """Plain-CNN SAC policy. Two parallel Linear heads off the flattened encoder."""
 
     def __init__(
         self,
@@ -236,9 +220,7 @@ class CNNActor(SACGaussianPolicyBase):
 
 
 class CNNCritic(torch.nn.Module):
-    """Plain-CNN twin-Q critic. One shared CNNEncoder drives both heads
-    with independent single-hidden-layer MLPs taking (encoder_flat, action).
-    """
+    """Plain-CNN twin-Q critic. Shared CNNEncoder, two independent single-hidden-layer MLPs."""
 
     def __init__(
         self,
@@ -257,7 +239,7 @@ class CNNCritic(torch.nn.Module):
         self.encoder = encoder
         self.action_dim = action_dim
 
-        # Two independent MLPs decorrelate the twin Qs without duplicating conv weights.
+        # Independent MLPs decorrelate the twin Qs (conv weights shared).
         mlp_in = encoder.output_dim + action_dim
         self.q1_mlp = torch.nn.Sequential(
             torch.nn.Linear(mlp_in, hidden_dim),
@@ -276,8 +258,7 @@ class CNNCritic(torch.nn.Module):
         action: torch.Tensor,
         detach_encoder: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # detach_encoder is a per-call flag for FERM's actor step (stops
-        # actor-loss gradient on the Q-path from reaching the shared encoder).
+        # detach_encoder: FERM actor step stops actor-loss grad on the shared encoder.
         encoded = self.encoder(obs)
         if detach_encoder:
             encoded = encoded.detach()

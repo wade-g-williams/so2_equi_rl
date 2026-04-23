@@ -1,6 +1,7 @@
-"""Agent-agnostic trainer skeleton. Owns env rollout, buffer writes,
-update scheduling, eval, and checkpointing. Two abstract hooks
-(_warmup_action, _explore) cover the per-RL-family differences.
+"""Agent-agnostic trainer skeleton.
+
+Owns env rollout, buffer writes, update scheduling, eval, and checkpointing.
+Two abstract hooks (_warmup_action, _explore) cover the per-RL-family differences.
 """
 
 import dataclasses
@@ -22,14 +23,12 @@ from so2_equi_rl.configs.base import TrainConfig
 from so2_equi_rl.utils.logging import RunLogger
 
 if TYPE_CHECKING:
-    # Deferred so base.py imports without BulletArm and tests can pass mocks.
-    # EnvWrapper pulls in helping_hands_rl_envs which has the load-time bug
-    # we patch in envs/__init__.py.
+    # Deferred so base.py imports without BulletArm; tests can pass mocks.
     from so2_equi_rl.envs.wrapper import EnvWrapper
 
 
 class BaseTrainer(ABC):
-    """Drives the train, eval, and checkpoint loop for any Agent subclass."""
+    """Train/eval/checkpoint loop for any Agent subclass."""
 
     def __init__(
         self,
@@ -47,18 +46,16 @@ class BaseTrainer(ABC):
         self.buffer = buffer
         self.logger = logger
 
-        # Rollout state on self so _warmup and _train_loop don't pass it around.
+        # Rollout state on self so _warmup + _train_loop don't pass it around.
         self._state: Optional[torch.Tensor] = None
         self._obs: Optional[torch.Tensor] = None
 
         self.global_step: int = 0
-        self.best_success: float = -math.inf  # first eval always wins best.pt
+        self.best_success: float = -math.inf  # first eval wins best.pt
 
     @abstractmethod
     def _warmup_action(self, state: torch.Tensor, obs: torch.Tensor) -> ActionPair:
-        """Action pushed into the buffer during warmup. SAC uses the
-        scripted expert; DQN will pick a random grid index.
-        """
+        """Action pushed into the buffer during warmup."""
 
     @abstractmethod
     def _explore(
@@ -67,9 +64,7 @@ class BaseTrainer(ABC):
         obs: torch.Tensor,
         global_step: int,
     ) -> ActionPair:
-        """Action for one rollout step. global_step is exposed for DQN's
-        epsilon decay; SAC ignores it.
-        """
+        """Action for one rollout step. global_step is for DQN's epsilon decay."""
 
     def run(self, resume_path: Optional[Path] = None) -> None:
         try:
@@ -79,19 +74,15 @@ class BaseTrainer(ABC):
             # Fresh rollout state. On resume this drops the in-flight episode.
             self._state, self._obs = self.train_env.reset()
 
-            # Warmup runs on empty buffer only. With episode-based warmup,
-            # we can't cheaply compare len(buffer) to warmup_episodes (episodes
-            # aren't tracked in the buffer state), so a buffer-sidecar resume
-            # skips warmup by virtue of having any entries. Fresh runs start
-            # at len==0 and warm up.
+            # Warmup runs on empty buffer only. Resume from a buffer sidecar
+            # skips warmup by virtue of len(buffer) > 0.
             if len(self.buffer) == 0:
                 self._warmup()
 
             self._train_loop()
 
-            # Final eval and full resume bundle (last.pt + buffer.pt) so
-            # end-of-run artifacts always exist and a follow-up run can
-            # resume without re-warming.
+            # Final eval + full resume bundle (last.pt + buffer.pt) so a
+            # follow-up run can resume without re-warming.
             final_metrics = self._evaluate()
             self.logger.log_scalars(
                 final_metrics, step=self.global_step, to_stdout=True
@@ -102,10 +93,8 @@ class BaseTrainer(ABC):
             self.logger.close()
 
     def _warmup(self) -> None:
-        # Seed the buffer via _warmup_action. No updates, no eval, no
-        # global_step advance. Counts completed expert episodes (done
-        # flags), not env-steps or buffer entries; paper App F: SAC=20,
-        # DQN=100. BulletArm auto-resets on done.
+        # Seed buffer via _warmup_action; no updates, no eval, no global_step advance.
+        # Counts completed episodes (paper App F: SAC=20, DQN=100).
         target_episodes = int(self.cfg.warmup_episodes)
         completed_episodes = 0
         B = self.train_env.batch_size
@@ -133,18 +122,17 @@ class BaseTrainer(ABC):
         )
 
     def _evaluate(self) -> Dict[str, float]:
-        # Deterministic rollouts on a separate EnvWrapper so training rollout state isn't clobbered.
-        # Paper (Wang et al. ICLR 2022) y-axis is *discounted* eval return, so
-        # we keep the per-env reward trace and fold it with gamma on episode end.
+        # Deterministic rollouts on a separate EnvWrapper so training state isn't clobbered.
+        # Paper uses discounted eval return, so we keep per-env reward traces
+        # and fold with gamma on episode end.
         state, obs = self.eval_env.reset()
         Be = self.eval_env.batch_size
         gamma = self.cfg.gamma
 
         traces: List[List[float]] = [[] for _ in range(Be)]
         ep_len = torch.zeros(Be)
-        # None until success fires; then holds the t-index (0-based) of the
-        # first step step.success latched true. Used to compute gamma^t, the
-        # reward-mode-agnostic paper-style discounted return.
+        # t-index of first step.success == 1 (None until it fires).
+        # Used to compute the reward-mode-agnostic gamma^t metric.
         ep_success_step: List[Optional[int]] = [None] * Be
         disc_returns: List[float] = []
         disc_success_per_ep: List[float] = []
@@ -158,8 +146,7 @@ class BaseTrainer(ABC):
 
             for i in range(Be):
                 traces[i].append(float(step.reward[i].item()))
-                # Record the first-success step only; later successes in the
-                # same episode are ignored so gamma^t stays monotone.
+                # Record first-success step only; later ones ignored so gamma^t stays monotone.
                 if (
                     step.success is not None
                     and step.success[i].item() > 0.5
@@ -173,9 +160,8 @@ class BaseTrainer(ABC):
                         R = r + gamma * R
                     disc_returns.append(R)
                     lengths.append(ep_len[i].item())
-                    # Paper-style metric: gamma^t_success if solved, else 0.
-                    # Reward-mode-agnostic, directly comparable across sparse
-                    # and dense runs and across backends.
+                    # Paper-style: gamma^t_success if solved, else 0.
+                    # Comparable across sparse/dense runs and across backends.
                     t = ep_success_step[i]
                     disc_success_per_ep.append(gamma**t if t is not None else 0.0)
                     successes.append(t is not None)
@@ -186,9 +172,7 @@ class BaseTrainer(ABC):
                         break
             state, obs = step.state, step.obs
 
-        # BulletArm and MS3 both populate step.success now, so this is valid
-        # across backends. BulletArm sets it from reward>0 (sparse {0,1}),
-        # MS3 pulls info['success'] from the task's internal predicate.
+        # BulletArm sets step.success from reward>0; MS3 reads info['success'].
         success_rate = float(np.mean([1.0 if s else 0.0 for s in successes]))
         return {
             "eval/return_disc_mean": float(np.mean(disc_returns)),
@@ -198,8 +182,7 @@ class BaseTrainer(ABC):
         }
 
     def _save_policy(self, name: str) -> None:
-        # Policy-only payload so cadenced and best-eval saves stay MB-scale.
-        # Buffer lives in the buffer.pt sidecar written at run end.
+        # Policy-only payload (MB-scale); buffer goes in buffer.pt at run end.
         payload: Dict[str, Any] = {
             "global_step": self.global_step,
             "best_success": self.best_success,
@@ -219,11 +202,10 @@ class BaseTrainer(ABC):
         self.logger.save_checkpoint(name, payload)
 
     def _load(self, path: Path) -> None:
-        # map_location='cpu' so a cuda-saved ckpt loads on cpu-only too.
+        # map_location='cpu' so cuda-saved ckpts load on cpu-only too.
         payload = torch.load(path, map_location="cpu")
 
-        # Soft cfg diff: warn, don't raise. Catches drift between resume
-        # runs without blocking intentional changes.
+        # Soft cfg diff: warn, don't raise, so intentional changes aren't blocked.
         current_cfg = dataclasses.asdict(self.cfg)
         saved_cfg = payload.get("cfg_snapshot", {})
         diffs = {
@@ -239,9 +221,7 @@ class BaseTrainer(ABC):
 
         self.agent.load_state_dict(payload["agent"])
 
-        # Buffer sidecar lives next to the policy file. It's only written
-        # at end of run, so a resume from a cadenced ckpt won't find one
-        # and falls through to warmup.
+        # Buffer sidecar is only written at run end; cadenced ckpts won't have one.
         buffer_path = Path(path).parent / "buffer.pt"
         if buffer_path.exists():
             buffer_state = torch.load(buffer_path, map_location="cpu")
@@ -264,18 +244,14 @@ class BaseTrainer(ABC):
         self.best_success = float(payload["best_success"])
 
     def _train_loop(self) -> None:
-        # 100-episode rolling window matches Wang et al. utils/logger.py:107.
-        # Warmup episodes aren't seeded in (expert returns inflate the early curve).
-        #
-        # global_step counts update iterations, matching the paper repo's
-        # logger.num_training_steps (main.py:46) and the x-axis on figs 6/7/8.
-        # One iter = one env.step cycle + n_updates_per_step gradient updates.
+        # 100-ep rolling window matches Wang et al. utils/logger.py:107.
+        # global_step counts update iters (paper main.py:46 logger.num_training_steps).
+        # One iter = one env.step + n_updates_per_step gradient updates.
         cfg = self.cfg
         B = self.train_env.batch_size
         step_per_iter = int(cfg.n_updates_per_step)
 
-        # Cadences must be multiples of step_per_iter so they fire inside the
-        # `% cadence < step_per_iter` window. For UTD=1 this is any int.
+        # Cadences must divide step_per_iter to fire inside the `% cadence < step_per_iter` window.
         for cadence_name, cadence in (
             ("log_every", cfg.log_every),
             ("eval_every", cfg.eval_every),
@@ -293,8 +269,7 @@ class BaseTrainer(ABC):
         recent_successes: deque = deque(maxlen=100)
         loss_accum: Dict[str, list] = defaultdict(list)
 
-        # SPS window anchor. Reset on every log so SPS measures the last
-        # log_every window, not since run start.
+        # SPS anchor resets every log so SPS covers the last log_every window.
         sps_anchor_step = self.global_step
         sps_anchor_time = time.time()
 
@@ -303,7 +278,7 @@ class BaseTrainer(ABC):
         )
 
         while self.global_step < cfg.total_steps:
-            # _explore owns the exploration decision (SAC stochastic, DQN epsilon-greedy later).
+            # _explore owns the exploration decision (SAC stochastic, DQN eps-greedy).
             act = self._explore(self._state, self._obs, self.global_step)
             step = self.train_env.step(act.physical)
 
@@ -336,14 +311,11 @@ class BaseTrainer(ABC):
                 for k, v in metrics.items():
                     loss_accum[k].append(v)
 
-            # Advance by update count, not env-step-worker count. Paper repo
-            # (main.py:46 logger.num_training_steps += 1) counts exactly this:
-            # one gradient step increments the training-step counter by one.
+            # Advance by update count to match paper's training-step counter.
             self._state, self._obs = step.state, step.obs
             self.global_step += step_per_iter
 
-            # Cadenced log/eval/ckpt. `< step_per_iter` captures the single
-            # boundary crossing per iter (= `== 0 (mod cadence)` for UTD=1).
+            # Cadenced log/eval/ckpt. `< step_per_iter` catches the single boundary crossing.
             if self.global_step % cfg.log_every < step_per_iter:
                 now = time.time()
                 window_steps = self.global_step - sps_anchor_step

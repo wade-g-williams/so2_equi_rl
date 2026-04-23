@@ -1,13 +1,10 @@
 """Image-space augmentation helpers for replay-sampled batches.
 
-random_shift is the DrQ primitive (pad + random HxW crop, default pad=4).
-random_crop is the RAD/CURL/FERM primitive, same mechanics at pad=7
+random_shift is DrQ's primitive (pad + random HxW crop, default pad=4).
+random_crop is the RAD/CURL/FERM primitive with the same mechanics at pad=7
 (128+14=142 effective, cropped back to 128). Neither rotates the action
-since pixel translation doesn't change world-frame deltas.
-
-rotate_obs, rotate_action_dxy, sample_so2_angles, random_so2_augment stay
-here for backward-compat with tests and older equivariance experiments;
-the paper-faithful SO(2) aug now lives in buffers/so2_aug.py.
+since pixel translation doesn't change world-frame deltas. The SO(2)
+replay-aug lives in buffers/so2_aug.py.
 """
 
 import math
@@ -20,7 +17,7 @@ _VALID_MODES = ("continuous", "discrete_cN")
 
 
 def _broadcast_theta(theta: torch.Tensor, batch: int) -> torch.Tensor:
-    # Accept a scalar, (1,), or (B,) so callers don't have to pre-expand a single angle.
+    # Accept scalar, (1,), or (B,) so callers don't pre-expand a single angle.
     if theta.ndim == 0 or theta.shape == (1,):
         theta = theta.expand(batch)
     if theta.shape != (batch,):
@@ -45,10 +42,10 @@ def sample_so2_angles(
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
 
     if mode == "continuous":
-        # Uniform on [0, 2pi). group_order is unused here.
+        # Uniform on [0, 2pi); group_order unused.
         return torch.rand(batch, generator=generator) * (2.0 * math.pi)
 
-    # Discrete C_N lattice: k ~ Uniform{0, ..., N-1}, theta = 2 pi k / N.
+    # Discrete C_N lattice: k ~ Uniform{0..N-1}, theta = 2 pi k / N.
     if group_order < 1:
         raise ValueError(f"group_order must be >= 1, got {group_order}")
     k = torch.randint(0, group_order, (batch,), generator=generator)

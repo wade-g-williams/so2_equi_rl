@@ -1,6 +1,4 @@
-"""Abstract Agent base class. The trainer only calls the methods on
-this class, concrete agents (SAC, DQN, ...) implement them.
-"""
+"""Abstract Agent base class. Trainer calls this contract, subclasses implement it."""
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, NamedTuple
@@ -10,20 +8,14 @@ from torch import Tensor
 
 
 class ActionPair(NamedTuple):
-    """Return shape for Agent.select_action.
-
-    unscaled goes into the buffer (SAC: [-1, 1] continuous; DQN: int64
-    grid index). physical goes into env.step (pxyzr in physical units).
-    """
+    """unscaled goes into the buffer, physical goes into env.step."""
 
     unscaled: Tensor
     physical: Tensor
 
 
 class Agent(ABC):
-    """Minimal contract the trainer calls. Networks, optimizers, action
-    decoder, and entropy tuning all live in subclasses.
-    """
+    """Minimal contract the trainer calls."""
 
     @abstractmethod
     def select_action(
@@ -40,9 +32,7 @@ class Agent(ABC):
 
     @abstractmethod
     def state_dict(self) -> Dict[str, Any]:
-        """Full trainable state for checkpointing. Optimizer state lives
-        with the weights.
-        """
+        """Full trainable state for checkpointing."""
 
     @abstractmethod
     def load_state_dict(self, d: Dict[str, Any]) -> None:
@@ -50,11 +40,9 @@ class Agent(ABC):
 
     @staticmethod
     def _unalias_buffers(module: torch.nn.Module) -> None:
-        # e2cnn R2Conv caches basis-expansion index tables as stride-0 views
-        # that share storage across blocks. load_state_dict's in-place copy_
-        # refuses to write into a destination whose elements overlap in
-        # memory. Swap each non-contiguous buffer for a contiguous copy so
-        # copy_ has non-aliased memory to write.
+        # e2cnn R2Conv basis-expansion buffers share storage across blocks, so
+        # load_state_dict's copy_ refuses to write. Swap each non-contiguous
+        # buffer for a contiguous copy.
         for submod in module.modules():
             for name in list(submod._buffers):
                 buf = submod._buffers[name]

@@ -1,8 +1,8 @@
-"""RAD-DQN. Subclass of DQNAgent that applies a random crop to (obs,
-next_obs) and runs the vanilla DQN update on the augmented transition.
+"""RAD-DQN. Random crops (obs, next_obs) and runs the vanilla DQN update
+on the augmented transition.
 
-Paper sec E: RAD uses random crop (142x142 -> 128x128). Action is NOT
-augmented, since pixel translation doesn't change world-frame delta actions.
+Paper sec E: random crop (142x142 -> 128x128). Action is not augmented
+since pixel translation doesn't change world-frame delta actions.
 """
 
 from typing import Dict, Type
@@ -15,13 +15,12 @@ from so2_equi_rl.buffers.replay import Transition
 from so2_equi_rl.configs.dqn_rad import DQNRADConfig
 from so2_equi_rl.utils import augmentation as aug_mod
 
-# Fixed offset on cfg.seed so the aug RNG is decoupled from DrQ (1337),
-# RAD-SAC (2022), and FERM.
+# Offset on cfg.seed so aug RNG is decoupled from DrQ (1337), RAD-SAC (2022), and FERM.
 _AUG_SEED_OFFSET = 2023
 
 
 class DQNRADAgent(DQNAgent):
-    """DQN with paper-faithful random-crop augmentation."""
+    """DQN with random-crop augmentation."""
 
     def __init__(
         self,
@@ -39,8 +38,7 @@ class DQNRADAgent(DQNAgent):
     def update(self, batch: Transition) -> Dict[str, float]:
         batch = batch.to(self.device, non_blocking=True)
 
-        # random_crop expects CPU tensors for the generator step; move obs
-        # back to device after crop.
+        # random_crop's generator is on cpu; move back to device after.
         obs_cpu = batch.obs.cpu()
         next_obs_cpu = batch.next_obs.cpu()
 

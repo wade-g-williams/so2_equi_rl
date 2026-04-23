@@ -1,10 +1,10 @@
 # so2_equi_rl
 
-Reimplementation of Wang et al., *SO(2)-Equivariant Reinforcement Learning* (ICLR 2022), on the three close-loop BulletArm tasks from the paper, plus a ManiSkill3 extension covering PickCube-v1, PullCube-v1, and StackCube-v1. CS 5180 final project, Spring 2026.
+Reimplementation of Wang et al., *SO(2)-Equivariant Reinforcement Learning* (ICLR 2022), on the three close-loop BulletArm tasks from the paper, plus a ManiSkill 3 SAC extension on PickCube-v1. CS 5180 final project, Spring 2026.
 
 ## Setup
 
-Two conda envs, one per simulator. BulletArm needs Python 3.7 to match the paper, ManiSkill3 needs 3.10. The BulletArm sim is vendored as a submodule.
+Two conda envs, one per simulator. BulletArm needs Python 3.7 to match the paper, ManiSkill 3 needs 3.10. The BulletArm sim is vendored as a submodule.
 
 ```bash
 git clone --recursive https://github.com/wade-g-williams/so2_equi_rl.git
@@ -28,7 +28,7 @@ git apply ../patches/helping_hands_auto_reset.patch
 cd ..
 ```
 
-ManiSkill3 env:
+ManiSkill 3 env:
 
 ```bash
 conda env create -f environment_ms3.yml
@@ -56,31 +56,34 @@ Training scripts:
 
 - `train_sac.py`, vanilla SAC, `--encoder {equi, cnn}`
 - `train_sac_drq.py`, DrQ-SAC
-- `train_sac_rad.py`, RAD-SAC
-- `train_sac_ferm.py`, FERM-SAC, CNN hardcoded
-- `train_dqn.py`, DQN plus DrQ, RAD, and CURL variants, selected via `--network {equi, cnn, drq, rad, curl}`
+- `train_sac_rad.py`, RAD-SAC (implemented, not in final results)
+- `train_sac_ferm.py`, FERM-SAC, CNN hardcoded. InfoNCE runs concurrently with SAC; the 1600-step contrastive pretrain used in the paper was dropped for scope, so FERM here underperforms the paper's FERM on block_pulling
+- `train_dqn.py`, DQN plus DrQ, RAD, and CURL variants, selected via `--network {equi, cnn, drq, rad, curl}`. RAD is implemented but not in final results
 
-Paper scope is three close-loop BulletArm tasks:
+Paper reproduction scope:
 
-- `close_loop_block_picking`
-- `close_loop_block_pulling`
-- `close_loop_drawer_opening`
+- SAC was evaluated on `close_loop_block_pulling`, `close_loop_block_picking`, and `close_loop_drawer_opening`
+- DQN was evaluated on `close_loop_block_pulling`, `close_loop_household_picking` (the paper's object-picking benchmark), and `close_loop_drawer_opening`
 
-Plus the ManiSkill3 extension, run with `--env-backend maniskill` in the `ms3_equi` env:
+Both at 20,000 env steps with two seeds per cell, except DQN on drawer_opening which has a single seed. Block_picking was used in place of household_picking for SAC because the SAC sweep was locked in before the household-object runs were planned.
 
-- `PickCube-v1`
-- `PullCube-v1`
-- `StackCube-v1`
-
-PickCube and PullCube are the direct MS3 analogues of block_picking and block_pulling. StackCube stands in for drawer_opening because MS3's OpenCabinetDrawer uses a mobile Fetch robot, not a tabletop Panda.
+The ManiSkill 3 extension runs Equi SAC and CNN SAC on `EquiPickCube-v1`, a subclassed PickCube-v1 that hides the Panda arm from the depth observation so the scene is rotation-symmetric. Run with `--env-backend maniskill` in the `ms3_equi` env. Four trials per variant at 100,000 steps.
 
 The BulletArm wrapper supports more tasks than these three, see [envs/wrapper.py](src/so2_equi_rl/envs/wrapper.py). Reproduction sticks to the paper's.
 
 Each run writes a timestamped directory under `outputs/` with the resolved config, a `metrics.jsonl` eval log, TensorBoard events, and checkpoints. Resume with `--resume outputs/<run>/ckpts/latest.pt`.
 
-Reproducing the full matrix means looping over variants, tasks, and seeds. Each `train_*.py` script is standalone, so run them however fits your hardware.
+### Production matrix
 
-BulletArm loop (all variants, all three tasks, seeds 0 and 1, adjust the `seed` range for more):
+[scripts/launch_matrix.py](scripts/launch_matrix.py) expands [scripts/matrix.yaml](scripts/matrix.yaml) into one training cell per (algo, model, task, backend, seed), gates each launch on free VRAM, and runs them sequentially or through a worker pool. Each cell is wrapped in `conda run -n <env>` so one invocation dispatches both backends.
+
+```bash
+python -m scripts.launch_matrix --config scripts/matrix.yaml --output-dir outputs/matrix
+```
+
+Add `--parallel N` for N concurrent workers, `--dry-run` to print the command for each cell without launching, and `--vram-override MIB` to force a per-job budget. Cells that have already completed leave a done-marker at `outputs/matrix/.markers/<run_tag>.done`; re-running the launcher skips them, so resumes are idempotent.
+
+### Manual sweep (BulletArm, all variants, both seeds)
 
 ```bash
 conda activate equi_rl
@@ -95,10 +98,15 @@ for task in close_loop_block_picking close_loop_block_pulling close_loop_drawer_
     python scripts/train_sac_drq.py --encoder cnn --env-name $task \
         --env-backend bulletarm --seed $seed --total-steps 20000 \
         --num-processes 5 --run-name sac_drq_cnn_${task}_s$seed
-    python scripts/train_sac_rad.py --encoder cnn --env-name $task \
+    python scripts/train_sac_ferm.py --env-name $task \
         --env-backend bulletarm --seed $seed --total-steps 20000 \
-        --num-processes 5 --run-name sac_rad_cnn_${task}_s$seed
-    for net in equi cnn drq rad curl; do
+        --num-processes 5 --run-name sac_ferm_${task}_s$seed
+  done
+done
+
+for task in close_loop_household_picking close_loop_block_pulling close_loop_drawer_opening; do
+  for seed in 0 1; do
+    for net in equi cnn drq curl; do
       python scripts/train_dqn.py --network $net --env-name $task \
           --env-backend bulletarm --seed $seed --total-steps 20000 \
           --num-processes 5 --run-name dqn_${net}_${task}_s$seed
@@ -107,62 +115,28 @@ for task in close_loop_block_picking close_loop_block_pulling close_loop_drawer_
 done
 ```
 
-ManiSkill3 loop, same shape with `--env-backend maniskill`, `--num-envs 32`, and the three MS3 task ids:
+ManiSkill 3 loop on EquiPickCube-v1, 4 seeds, 100k steps:
 
 ```bash
 conda activate ms3_equi
 
-for task in PickCube-v1 PullCube-v1 StackCube-v1; do
-  for seed in 0 1; do
-    for enc in equi cnn; do
-      python scripts/train_sac.py --encoder $enc --env-name $task \
-          --env-backend maniskill --seed $seed --total-steps 20000 \
-          --num-envs 32 --run-name sac_${enc}_${task}_s$seed
-    done
-    python scripts/train_sac_drq.py --encoder cnn --env-name $task \
-        --env-backend maniskill --seed $seed --total-steps 20000 \
-        --num-envs 32 --run-name sac_drq_cnn_${task}_s$seed
-    python scripts/train_sac_rad.py --encoder cnn --env-name $task \
-        --env-backend maniskill --seed $seed --total-steps 20000 \
-        --num-envs 32 --run-name sac_rad_cnn_${task}_s$seed
-    for net in equi cnn drq rad curl; do
-      python scripts/train_dqn.py --network $net --env-name $task \
-          --env-backend maniskill --seed $seed --total-steps 20000 \
-          --num-envs 32 --run-name dqn_${net}_${task}_s$seed
-    done
+for seed in 0 1 2 3; do
+  for enc in equi cnn; do
+    python scripts/train_sac.py --encoder $enc --env-name EquiPickCube-v1 \
+        --env-backend maniskill --seed $seed --total-steps 100000 \
+        --num-envs 32 --run-name sac_${enc}_pickcube_s$seed
   done
 done
 ```
 
-FERM needs 1600 InfoNCE pretrain steps on expert-demo obs before SAC starts (paper Appendix F). Without it, FERM tends to flatline on block_pulling. Two steps per cell, pretrain then load:
-
-```bash
-# BulletArm FERM example (one task, one seed)
-conda activate equi_rl
-
-python scripts/pretrain_ferm.py \
-    --env-name close_loop_block_pulling --env-backend bulletarm \
-    --seed 0 --num-processes 5 \
-    --run-name ferm_pretrain_block_pulling_s0
-
-ENC=$(ls -td outputs/*_ferm_pretrain_block_pulling_s0/ckpts/pretrained_encoder.pt | head -1)
-
-python scripts/train_sac_ferm.py \
-    --env-name close_loop_block_pulling --env-backend bulletarm \
-    --seed 0 --total-steps 20000 --num-processes 5 \
-    --pretrained-encoder $ENC \
-    --run-name sac_ferm_block_pulling_s0
-```
-
-For MS3 FERM, swap `--env-backend maniskill`, `--num-envs 32`, the conda env, and the task id.
-
-Plots:
+### Plots + environment panel
 
 ```bash
 python scripts/plot_results.py --roots outputs --out outputs/plots
+python scripts/render_env_panel.py
 ```
 
-Writes one PDF per (alg family, backend). Four total, Fig 6 DQN and Fig 7 SAC on both BulletArm and ManiSkill3.
+`plot_results.py` aggregates by (alg family, backend), averages seeds, and writes learning-curve PDFs. `render_env_panel.py` produces the three-task PyBullet panel used in the report.
 
 ## Layout
 
@@ -171,13 +145,16 @@ so2_equi_rl/
 |-- environment.yml
 |-- environment_ms3.yml
 |-- pyproject.toml
-|-- .pre-commit-config.yaml
 |-- helping_hands_rl_envs/
 |-- patches/
 |-- reference/
+|   `-- wang_2022_so2_equivariant_rl.pdf
 |-- report/
-|   |-- poster.tex
-|   |-- poster.pdf
+|   |-- final_report.tex
+|   |-- final_report.pdf
+|   |-- references.bib
+|   |-- aaai2026.sty
+|   |-- aaai2026.bst
 |   `-- figures/
 |-- scripts/
 |   |-- train_sac.py
@@ -185,63 +162,32 @@ so2_equi_rl/
 |   |-- train_sac_rad.py
 |   |-- train_sac_ferm.py
 |   |-- train_dqn.py
+|   |-- launch_matrix.py
+|   |-- matrix.yaml
 |   |-- plot_results.py
 |   `-- render_env_panel.py
-|-- outputs/
+|-- outputs/           # training artifacts, gitignored
 `-- src/so2_equi_rl/
+    |-- launch.py
     |-- agents/
-    |   |-- base.py
-    |   |-- sac.py
-    |   |-- sac_drq.py
-    |   |-- sac_rad.py
-    |   |-- sac_ferm.py
-    |   |-- dqn.py
-    |   |-- dqn_drq.py
-    |   |-- dqn_rad.py
-    |   `-- dqn_curl.py
     |-- buffers/
-    |   |-- replay.py
-    |   `-- so2_aug.py
     |-- configs/
-    |   |-- base.py
-    |   |-- sac.py
-    |   |-- sac_drq.py
-    |   |-- sac_rad.py
-    |   |-- sac_ferm.py
-    |   |-- dqn.py
-    |   |-- dqn_drq.py
-    |   |-- dqn_rad.py
-    |   `-- dqn_curl.py
     |-- envs/
-    |   |-- wrapper.py
-    |   |-- maniskill_wrapper.py
-    |   `-- maniskill_experts.py
     |-- networks/
-    |   |-- encoders.py
-    |   |-- sac_heads.py
-    |   `-- dqn_heads.py
     |-- trainers/
-    |   |-- base.py
-    |   |-- sac.py
-    |   `-- dqn.py
     `-- utils/
-        |-- augmentation.py
-        |-- cli_args.py
-        |-- logging.py
-        |-- preprocessing.py
-        `-- seeding.py
 ```
 
 ## Results
 
-Paper reproduction covers Fig 6 (DQN plus DrQ, RAD, CURL) and Fig 7 (SAC plus DrQ, RAD, FERM) on the three close-loop BulletArm tasks, 2 seeds each, 20k env steps. The ManiSkill3 extension runs the same variants on PickCube-v1, PullCube-v1, and StackCube-v1 under the same budget.
+Final figures live in `report/figures/`; `final_report.pdf` in the same directory is the full writeup.
 
-- Fig 6 BulletArm, [outputs/plots/figure6_dqn_bulletarm.pdf](outputs/plots/figure6_dqn_bulletarm.pdf)
-- Fig 7 BulletArm, [outputs/plots/figure7_sac_bulletarm.pdf](outputs/plots/figure7_sac_bulletarm.pdf)
-- MS3 extension, [outputs/plots/figure6_dqn_maniskill.pdf](outputs/plots/figure6_dqn_maniskill.pdf), [outputs/plots/figure7_sac_maniskill.pdf](outputs/plots/figure7_sac_maniskill.pdf)
-- Environment panel, [report/figures/env_panel.png](report/figures/env_panel.png)
-- Full writeup and poster, [report/poster.pdf](report/poster.pdf)
+- Fig 1, SAC on BulletArm, [report/figures/fig1_sac_bulletarm.pdf](report/figures/fig1_sac_bulletarm.pdf)
+- Fig 2, DQN on BulletArm, [report/figures/fig2_dqn_bulletarm.pdf](report/figures/fig2_dqn_bulletarm.pdf)
+- Fig 3, SAC on ManiSkill 3 EquiPickCube-v1, [report/figures/maniskill_avg_returns.png](report/figures/maniskill_avg_returns.png)
+- Environment panel, [report/figures/env_panel_screenshot.png](report/figures/env_panel_screenshot.png)
+- Writeup, [report/final_report.pdf](report/final_report.pdf)
 
 ## Reference
 
-Wang, Walters, Platt. "SO(2)-Equivariant Reinforcement Learning." ICLR 2022. [arXiv:2203.04439](https://arxiv.org/abs/2203.04439)
+Wang, Walters, Platt. "SO(2)-Equivariant Reinforcement Learning." ICLR 2022. [arXiv:2203.04439](https://arxiv.org/abs/2203.04439). A local copy of the paper lives at [reference/wang_2022_so2_equivariant_rl.pdf](reference/wang_2022_so2_equivariant_rl.pdf).

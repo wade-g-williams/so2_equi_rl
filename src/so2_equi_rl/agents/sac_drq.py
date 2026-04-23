@@ -1,11 +1,9 @@
-"""DrQ-SAC. Subclass of SACAgent that averages the Bellman target over K
-shift-augmented copies of next_obs and the critic+actor losses over M
-shift-augmented copies of obs. Per-row shift is independent across
-(copy, row); copies are fused into one (n*B, ...) tensor op.
+"""DrQ-SAC. Averages the Bellman target over K shift-augmented copies of
+next_obs and the critic+actor losses over M shift-augmented copies of obs.
 
 Paper sec E + Kostrikov et al. 2020: DrQ uses random +/-4 pixel shift.
-Pixel shift doesn't change world-frame delta actions, so action is NOT
-augmented.
+Action is not augmented since pixel shift doesn't change world-frame
+delta actions.
 """
 
 from typing import Dict, Tuple, Type
@@ -21,13 +19,12 @@ from so2_equi_rl.configs.sac_drq import SACDrQConfig
 from so2_equi_rl.utils import augmentation as aug_mod
 from so2_equi_rl.utils import tile_state
 
-# Fixed offset on cfg.seed so the aug RNG is decoupled from the global
-# torch RNG and from RAD/FERM, but still reproducible from one int.
+# Offset on cfg.seed so aug RNG is decoupled from the global torch RNG and from RAD/FERM.
 _AUG_SEED_OFFSET = 1337
 
 
 class SACDrQAgent(SACAgent):
-    """Twin-Q SAC with paper-faithful DrQ shift augmentation on both sides."""
+    """Twin-Q SAC with DrQ shift augmentation on both sides."""
 
     def __init__(
         self,
@@ -53,8 +50,7 @@ class SACDrQAgent(SACAgent):
         n_copies: int,
     ) -> Tuple[Tensor, Tensor]:
         # n_copies independent shifted copies fused into one tensor op.
-        # .repeat(n, 1, 1, 1) tiles along dim 0 so row i appears at positions
-        # i, B+i, 2B+i, ...
+        # .repeat tiles along dim 0 so row i lands at positions i, B+i, 2B+i, ...
         obs_rep = obs.repeat(n_copies, 1, 1, 1).cpu()
         state_rep = state.repeat(n_copies, 1)
 
@@ -64,10 +60,9 @@ class SACDrQAgent(SACAgent):
         return obs_shifted.to(state.device), state_rep
 
     def update(self, batch: Transition) -> Dict[str, float]:
-        # K shifted copies of next_obs for the target average, M shifted
-        # copies of obs for the critic and actor losses. Alpha and Polyak
-        # match base SAC. Action passes through unchanged, since pixel shift is
-        # not an action-space transformation.
+        # K copies of next_obs for the target average, M copies of obs for
+        # the critic/actor losses. Alpha and Polyak match base SAC. Action
+        # passes through unchanged.
         batch = batch.to(self.device, non_blocking=True)
 
         B = batch.obs.shape[0]
@@ -99,12 +94,12 @@ class SACDrQAgent(SACAgent):
             y_k = reward_k + self.gamma * (1.0 - done_k) * min_q_next_k
             y = y_k.view(K, B, 1).mean(dim=0)
 
-        # Current side: M shifted copies of obs. Action tiled M-fold unchanged.
+        # Current side: M shifted copies of obs. Action tiled M-fold.
         obs_m, state_m = self._shift_copies(batch.obs, batch.state, M)
         obs_m_tiled = tile_state(obs_m, state_m)
         action_m = batch.action.repeat(M, 1)
 
-        # Critic step. Broadcast y M-fold so every copy hits the same averaged target.
+        # Critic step. Broadcast y M-fold so every copy hits the same target.
         q1, q2 = self.critic(obs_m_tiled, action_m)  # (M*B, 1)
         y_broadcast = y.repeat(M, 1)
         critic_loss = F.mse_loss(q1, y_broadcast) + F.mse_loss(q2, y_broadcast)
@@ -115,7 +110,7 @@ class SACDrQAgent(SACAgent):
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optim.step()
 
-        # Actor step. Same M-shifted obs so the policy sees the critic's distribution.
+        # Actor step on the same M-shifted obs.
         new_action, log_prob, _ = self.actor.sample(obs_m_tiled)
         q1_new, q2_new = self.critic(obs_m_tiled, new_action)
         min_q_new = torch.min(q1_new, q2_new)

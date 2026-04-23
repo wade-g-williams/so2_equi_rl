@@ -1,10 +1,8 @@
 """Twin-Q SAC with entropy tuning and a physical-unit action decoder.
 
-encoder_cls/actor_cls/critic_cls are injected so one update() body covers
-the equivariant runs and the CNN baseline.
-
-Buffer stores unscaled [-1, 1] actions, decode_action only runs at the
-env.step boundary. irrep(1) geometry is defined on the unscaled space.
+Network classes are injected so one update() body covers equivariant and
+CNN runs. Buffer stores unscaled [-1, 1] actions; decode_action runs at
+the env.step boundary. irrep(1) geometry is defined on the unscaled space.
 """
 
 import copy
@@ -53,7 +51,7 @@ class SACAgent(Agent):
             action_dim=cfg.action_dim,
         ).to(self.device)
 
-        # deepcopy after .to() so we don't rebuild the R2Conv kernel basis on the wrong device.
+        # deepcopy after .to() so R2Conv doesn't rebuild its basis on the wrong device.
         self.critic_target = copy.deepcopy(self.critic)
         for p in self.critic_target.parameters():
             p.requires_grad_(False)
@@ -64,7 +62,7 @@ class SACAgent(Agent):
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
 
     def _init_hyperparams(self, cfg: SACConfig) -> None:
-        # Auto-pick cuda when available so default construction doesn't crash on cpu-only boxes.
+        # Auto-pick cuda when available, fall back to cpu.
         device = cfg.device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         self.action_dim = cfg.action_dim
@@ -81,7 +79,7 @@ class SACAgent(Agent):
         self.p_span = self.p_high - self.p_low
 
     def _init_alpha(self, cfg: SACConfig) -> None:
-        # Learnable temperature in log-space so the optimizer sees an unconstrained scalar.
+        # Learnable temperature in log-space, unconstrained scalar for the optimizer.
         self.log_alpha = nn.Parameter(
             torch.tensor(math.log(cfg.init_alpha), device=self.device)
         )
@@ -97,7 +95,7 @@ class SACAgent(Agent):
         return self.log_alpha.exp()
 
     def decode_action(self, unscaled: Tensor) -> Tensor:
-        # [-1, 1] to physical units. p is asymmetric onto the gripper range, deltas are symmetric.
+        # [-1, 1] to physical. p is asymmetric onto the gripper range, deltas are symmetric.
         p = self.p_low + 0.5 * (unscaled[:, 0:1] + 1.0) * self.p_span
         dxyz = unscaled[:, 1:4] * self.dpos
         dtheta = unscaled[:, 4:5] * self.drot
@@ -105,7 +103,7 @@ class SACAgent(Agent):
 
     def encode_action(self, physical: Tensor) -> Tensor:
         # Inverse of decode_action, used to push planner demos into the buffer.
-        # Clamp guards against out-of-range planner commands breaking the [-1, 1] invariant.
+        # Clamp guards against out-of-range planner commands.
         p = 2.0 * (physical[:, 0:1] - self.p_low) / self.p_span - 1.0
         dxyz = physical[:, 1:4] / self.dpos
         dtheta = physical[:, 4:5] / self.drot
@@ -129,14 +127,14 @@ class SACAgent(Agent):
             else:
                 unscaled, _, _ = self.actor.sample(tiled)
             physical = self.decode_action(unscaled)
-        # Move to cpu before returning so env.step and the buffer don't pay a device sync.
+        # CPU return so env.step and the buffer don't pay a device sync.
         return ActionPair(unscaled=unscaled.cpu(), physical=physical.cpu())
 
     def update(self, batch: Transition) -> Dict[str, float]:
         # One SAC step: critic, actor, alpha, target.
         batch = batch.to(self.device, non_blocking=True)
 
-        # Q-values are (B, 1); reward and done arrive as (B,) so broadcast up.
+        # Q is (B, 1); reward and done arrive as (B,) so broadcast up.
         reward = batch.reward
         done = batch.done
         if reward.dim() == 1:
@@ -164,7 +162,7 @@ class SACAgent(Agent):
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip_norm)
         self.critic_optim.step()
 
-        # Actor step. rsample for the reparameterization trick.
+        # Actor step with reparameterization.
         new_action, log_prob, _ = self.actor.sample(obs_tiled)
         q1_new, q2_new = self.critic(obs_tiled, new_action)
         min_q_new = torch.min(q1_new, q2_new)
@@ -176,14 +174,13 @@ class SACAgent(Agent):
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip_norm)
         self.actor_optim.step()
 
-        # Temperature step. Detach log_prob so the gradient only touches log_alpha.
+        # Temperature step. Detach so gradient only touches log_alpha.
         alpha_loss = -(
             self.log_alpha * (log_prob + self.target_entropy).detach()
         ).mean()
 
         self.alpha_optim.zero_grad()
         alpha_loss.backward()
-        # No grad clip on log_alpha, vacuous on a 1-D tensor.
         self.alpha_optim.step()
 
         # Polyak target update.

@@ -1,27 +1,19 @@
 """DQN Q-networks for the 4-axis discrete action grid.
 
-Both nets emit Q for every (xy_id, z_id, theta_id, p_id) cell. The
-equivariant variant (paper Fig 12a) puts the rotation-equivariant
-dxy axis on the spatial 3x3 grid and the invariant (dz, dtheta, p)
-axes on the channel dim with trivial reps. The CNN baseline (paper
-Fig 13a) flattens the conv stack and emits 162 logits via FC. Both
-return the same (B, n_xy, n_z, n_theta, n_p) shape so DQNAgent stays
-net-agnostic.
+Both emit Q for every (xy_id, z_id, theta_id, p_id) cell. Equi variant (Fig 12a)
+puts dxy on the spatial 3x3 grid and (dz, dtheta, p) on channels with trivial
+reps. CNN baseline (Fig 13a) flattens the conv stack and emits 162 logits via FC.
 """
 
 import torch
 import torch.nn as nn
 
-from so2_equi_rl.networks._equiv_compat import enn, gspaces
+from so2_equi_rl.networks.equiv_compat import enn, gspaces
 from so2_equi_rl.networks.encoders import EXPECTED_OBS_SIZE
 
 
 class EquiDQNNet(nn.Module):
-    """C_N-equivariant Q-net. Seven R2Conv blocks reduce 128 spatial down
-    to 3 (the dxy grid). Output channels = n_p * n_z * n_theta = n_inv,
-    all trivial reps so the channel axis is rotation-invariant. A 90/N deg
-    rotation of the input cyclically permutes the spatial 3x3 grid.
-    """
+    """C_N-equivariant Q-net. Seven R2Conv blocks reduce 128 to 3x3 (the dxy grid)."""
 
     def __init__(
         self,
@@ -57,8 +49,7 @@ class EquiDQNNet(nn.Module):
             self.gspace, [self.gspace.trivial_repr] * obs_channels
         )
 
-        # Channel mults for blocks 1-6. Hidden fields use regular_repr so
-        # all rotated copies live together inside one channel block.
+        # Channel mults for blocks 1-6. Hidden fields use regular_repr.
         mults = (
             n_hidden // 4,
             n_hidden // 2,
@@ -70,8 +61,7 @@ class EquiDQNNet(nn.Module):
         regular_types = [
             enn.FieldType(self.gspace, m * [self.gspace.regular_repr]) for m in mults
         ]
-        # Final layer projects to n_inv trivial fields. Q-values are
-        # invariant under joint rotation when (xy_id) is fixed.
+        # Final layer projects to n_inv trivial fields; Q-values are invariant when xy_id is fixed.
         self.output_type = enn.FieldType(
             self.gspace, self.n_inv * [self.gspace.trivial_repr]
         )
@@ -114,19 +104,14 @@ class EquiDQNNet(nn.Module):
         x = enn.GeometricTensor(obs, self.input_type)
         out = self.conv(x).tensor  # (B, n_inv, 3, 3)
 
-        # Spatial (3, 3) -> n_xy=9 in row-major: row = dx_idx, col = dy_idx.
-        # Channel n_inv -> (n_z, n_theta, n_p) in row-major so the agent
-        # gathers q[..., z_id, theta_id, p_id] consistently.
+        # Spatial (3,3) -> n_xy=9 row-major (row=dx_idx, col=dy_idx).
+        # Channel n_inv -> (n_z, n_theta, n_p) row-major.
         out = out.permute(0, 2, 3, 1).contiguous()  # (B, 3, 3, n_inv)
         return out.view(B, self.n_xy, self.n_z, self.n_theta, self.n_p)
 
 
 class CNNDQNNet(nn.Module):
-    """Plain-CNN DQN baseline. Channel schedule (n_hidden//2, n_hidden,
-    2x, 4x, 8x, 8x, 2x) is parameter-matched to the equivariant net at
-    n_hidden=64. Final FC emits all 162 logits, reshaped to match the
-    equi net's (B, n_xy, n_z, n_theta, n_p) layout.
-    """
+    """Plain-CNN DQN baseline. Parameter-matched to the equi net at n_hidden=64."""
 
     def __init__(
         self,
@@ -164,8 +149,7 @@ class CNNDQNNet(nn.Module):
             n_hidden * 8,
             n_hidden * 2,
         )
-        # Flat feature dim exposed for CURL-style contrastive heads.
-        # Q-net shares its conv stack with the bilinear projection.
+        # Flat feature dim for CURL contrastive heads.
         self.feat_dim = c[6] * 3 * 3
 
         self.conv = nn.Sequential(
@@ -197,8 +181,7 @@ class CNNDQNNet(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Flatten (c[6], 3, 3) -> n_xy * n_inv. Single FC matches the paper's
-        # "FC at end" baseline.
+        # Single FC matches the paper's "FC at end" baseline.
         self.fc = nn.Linear(c[6] * 3 * 3, self.n_xy * self.n_inv)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -214,9 +197,7 @@ class CNNDQNNet(nn.Module):
         return flat.view(B, self.n_xy, self.n_z, self.n_theta, self.n_p)
 
     def features(self, obs: torch.Tensor) -> torch.Tensor:
-        # Flat pre-FC activation, shape (B, feat_dim). Used by DQN-CURL as
-        # the contrastive head's input. Sharing the same conv stack is how
-        # the InfoNCE loss ends up shaping the Q-encoder representation.
+        # Flat pre-FC activation (B, feat_dim) for the DQN-CURL contrastive head.
         if obs.shape[-2:] != (EXPECTED_OBS_SIZE, EXPECTED_OBS_SIZE):
             raise ValueError(
                 f"CNNDQNNet.features expects (B, C, {EXPECTED_OBS_SIZE}, "

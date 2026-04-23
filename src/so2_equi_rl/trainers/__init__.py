@@ -1,4 +1,4 @@
-"""Training loops. Shared skeleton in base.py, SAC and DQN specializations next to it."""
+"""Training loops."""
 
 from so2_equi_rl.trainers.base import BaseTrainer
 from so2_equi_rl.trainers.dqn import DQNTrainer

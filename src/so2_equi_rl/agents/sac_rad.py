@@ -1,9 +1,8 @@
-"""RAD-SAC. Subclass of SACAgent that applies a random crop to (obs,
-next_obs) and runs a vanilla SAC update on the augmented transition.
+"""RAD-SAC. Random crops (obs, next_obs) and runs a vanilla SAC update on
+the augmented transition.
 
-Paper sec E: RAD uses random crop (142x142 -> 128x128). Action is NOT
-augmented, since pixel-space translation doesn't change the world-frame
-delta action. Reward, state, next_state, done are invariant.
+Paper sec E: random crop (142x142 -> 128x128). Action is not augmented
+since pixel translation doesn't change world-frame delta actions.
 """
 
 from typing import Dict, Type
@@ -16,12 +15,12 @@ from so2_equi_rl.buffers.replay import Transition
 from so2_equi_rl.configs.sac_rad import SACRADConfig
 from so2_equi_rl.utils import augmentation as aug_mod
 
-# Fixed offset on cfg.seed so the aug RNG is decoupled from DrQ (1337) and FERM.
+# Offset on cfg.seed so aug RNG is decoupled from DrQ (1337) and FERM.
 _AUG_SEED_OFFSET = 2022
 
 
 class SACRADAgent(SACAgent):
-    """Twin-Q SAC with paper-faithful random-crop augmentation."""
+    """Twin-Q SAC with random-crop augmentation."""
 
     def __init__(
         self,
@@ -40,11 +39,9 @@ class SACRADAgent(SACAgent):
 
     def update(self, batch: Transition) -> Dict[str, float]:
         # Random crop obs and next_obs per row, hand off to base SAC.
-        # Action stays untouched, pixel shift is SO(2)-agnostic.
         batch = batch.to(self.device, non_blocking=True)
 
-        # random_crop expects CPU tensors for the generator step; move obs
-        # back to the device after crop.
+        # random_crop's generator is on cpu; move back to device after.
         obs_cpu = batch.obs.cpu()
         next_obs_cpu = batch.next_obs.cpu()
 

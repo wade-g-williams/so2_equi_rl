@@ -39,12 +39,9 @@ class DQNConfig(TrainConfig):
     #   A_xy = {(x,y) | x,y in {-0.05m, 0m, 0.05m}}
     #   A_z  = {-0.02m, 0m, 0.02m}
     #   A_theta  = {-pi/16, 0, pi/16}
-    # Paper text sec 6.1 claims A_xy step = 0.05, but every paper repo DQN
-    # command in README uses `--dpos=0.02` (binds dx=dy=dz=dpos at
-    # create_agent.py:35). Fig 6 curves were produced with dpos=0.02;
-    # text appears to have a typo, no code path can produce A_xy != A_z.
-    # dpos=0.05 is too coarse for Object Picking (5cm step over a 5cm
-    # cube overshoots; 2cm step gives the finer control paper actually uses).
+    # Paper text says A_xy = 0.05 but the released code binds dx = dy = dz
+    # = 0.02 and Fig 6 was produced at that setting. 0.05 also overshoots
+    # the 5 cm cube in Object Picking, so 0.02 is the value that works.
     dpos: float = 0.02
     dz: float = 0.02
     drot: float = math.pi / 16
@@ -55,15 +52,14 @@ class DQNConfig(TrainConfig):
     tau: float = 0.01  # Polyak soft target update
     lr: float = 1e-4
 
-    # None = disabled (matches paper repo).
+    # None = paper default.
     grad_clip_norm: Optional[float] = None
 
-    # Epsilon-greedy schedule. Paper repo runs DQN with `--explore=0`
-    # (parameters.py:35), which makes LinearSchedule return final_eps=0.0
-    # from step 0: no explicit eps-greedy noise. Early exploration comes
+    # Epsilon-greedy schedule. Paper sets explore=0, which gives final_eps=0
+    # from step 0 and no explicit eps-greedy noise. Early exploration comes
     # from the untrained Q-net's near-random argmax plus the 100-episode
-    # expert warmup. An earlier init_eps=1.0 decayed 1.0 -> 0.0 uniform
-    # random, which diluted the expert-demo signal for the first ~10k updates.
+    # expert warmup. Decaying from init_eps=1.0 instead dilutes the expert
+    # signal for the first ~10k updates.
     init_eps: float = 0.0
     final_eps: float = 0.0
     explore_steps: int = 1  # irrelevant when init_eps == final_eps

@@ -1,13 +1,12 @@
-"""Learning-curve plots for Fig 6 (DQN family) and Fig 7 (SAC family).
+"""Learning-curve plots for the SAC and DQN family comparisons.
 
 Discovers runs under one or more --roots, groups by
 (family, backend, task, variant, seed), aggregates seeds into mean + std
-band, writes one PDF per (family, backend). Reads both the legacy
-schema (info/parameters.json + info/eval_rewards.npy) and the new local
-schema (config.yaml + metrics.jsonl), so outputs from either pipeline
-aggregate cleanly.
+band, writes one PDF per (family, backend). Handles two output schemas:
+legacy runs (info/parameters.json + info/eval_rewards.npy) and new runs
+(config.yaml + metrics.jsonl).
 
-    python scripts/plot_results.py --roots outputs/matrix --out outputs/plots
+    python scripts/plot_results.py --roots outputs --out outputs/plots
 """
 
 import argparse
@@ -18,7 +17,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Poster typography, sized to stay legible at 36x24 in.
+# Paper typography: serif font, readable tick/label sizes.
 mpl.rcParams.update(
     {
         "font.family": "serif",
@@ -34,8 +33,7 @@ mpl.rcParams.update(
     }
 )
 
-# RAD dropped from both figures (scope lock 2026-04-20). The agents and
-# runs still exist on disk, we just don't plot them.
+# RAD is excluded from the plotted variants. Agents and configs still exist.
 VARIANT_ORDER_SAC = ["equi", "cnn", "drq", "ferm"]
 VARIANT_ORDER_DQN = ["equi", "cnn", "drq", "curl"]
 
@@ -56,18 +54,36 @@ VARIANT_COLOR = {
 }
 
 # BulletArm tasks are named close_loop_<task>; MS3 is keyed by ms3_task.
-TASK_ORDER_BULLETARM = ["block_picking", "block_pulling", "drawer_opening"]
+# Paper Fig 6/7 task sequence is Block Pulling, Object Picking (household), Drawer Opening.
+# SAC figure falls back to block_picking (cube) in the middle because the
+# sister-repo SAC sweep was never run on household_picking before scope-lock.
+TASK_ORDER_BULLETARM = [
+    "block_pulling",
+    "household_picking",
+    "block_picking",
+    "drawer_opening",
+]
 TASK_ORDER_MANISKILL = ["pickcube_v1", "pullcube_v1", "stackcube_v1"]
 TASK_LABEL = {
     "block_picking": "Block Picking",
     "block_pulling": "Block Pulling",
+    "household_picking": "Object Picking",
     "drawer_opening": "Drawer Opening",
     "pickcube_v1": "PickCube-v1",
     "pullcube_v1": "PullCube-v1",
     "stackcube_v1": "StackCube-v1",
 }
 
-BACKEND_LABEL = {"bulletarm": "BulletArm", "maniskill": "ManiSkill3"}
+BACKEND_LABEL = {"bulletarm": "PyBullet", "maniskill": "ManiSkill3"}
+
+# Report figure numbering: Fig 1 = SAC/PyBullet, Fig 2 = DQN/PyBullet,
+# Fig 3 = SAC/ManiSkill, Fig 4 = DQN/ManiSkill.
+FIG_NUMBER = {
+    ("sac", "bulletarm"): 1,
+    ("dqn", "bulletarm"): 2,
+    ("sac", "maniskill"): 3,
+    ("dqn", "maniskill"): 4,
+}
 
 
 _KNOWN_VARIANTS = {"equi", "cnn", "drq", "curl", "ferm", "rad"}
@@ -199,8 +215,10 @@ def _discover_new(run_dir: Path):
     except (TypeError, ValueError):
         return None
 
-    # Parse eval rows from metrics.jsonl. eval_every is the cadence.
-    eval_returns = []
+    # Parse eval rows from metrics.jsonl. Prefer explicit step values in
+    # each row so the x-axis reflects when evals actually happened (MS3 runs
+    # log at 4800/9600/14400/... instead of tidy 5000/10000/...).
+    eval_steps, eval_returns = [], []
     with metrics_path.open() as f:
         for line in f:
             if not line.strip():
@@ -211,10 +229,18 @@ def _discover_new(run_dir: Path):
                 continue
             if "eval/return_disc_mean" in row:
                 eval_returns.append(float(row["eval/return_disc_mean"]))
+                eval_steps.append(int(row.get("step", 0)))
     if not eval_returns:
         return None
 
     eval_rewards = np.asarray(eval_returns, dtype=np.float32)
+    eval_steps_arr = np.asarray(eval_steps, dtype=np.int64)
+    # Clip to total_steps so downstream plots don't extend past training.
+    total_steps = int(cfg.get("total_steps", 0))
+    if total_steps > 0:
+        mask = eval_steps_arr <= total_steps
+        eval_rewards = eval_rewards[mask]
+        eval_steps_arr = eval_steps_arr[mask]
 
     return {
         "run_dir": run_dir.name,
@@ -225,6 +251,7 @@ def _discover_new(run_dir: Path):
         "seed": seed,
         "eval_freq": int(cfg.get("eval_every", 500)),
         "eval_rewards": eval_rewards,
+        "eval_steps": eval_steps_arr,
         "n_evals": int(eval_rewards.size),
     }
 
@@ -264,24 +291,45 @@ def dedup_by_identity(runs):
     return list(chosen.values())
 
 
-def group_for_plot(runs, family: str, backend: str):
+def group_for_plot(runs, family: str, backend: str, prepend_zero: bool = False):
     # {task: {variant: {"curves": (n_seeds, min_len), "steps": ndarray}}}
+    # prepend_zero: add a synthetic (step=0, R=0) prefix per seed. Honest for
+    # sparse-reward tasks where an untrained policy's discounted return ≈ 0;
+    # DO NOT use for dense-reward backends (MS3) where the prior is nonzero.
     filtered = [r for r in runs if r["family"] == family and r["backend"] == backend]
     by_task_variant: dict = {}
     for r in filtered:
         d = by_task_variant.setdefault(r["task"], {}).setdefault(
             r["variant"],
-            {"seeds": [], "eval_freq": r["eval_freq"]},
+            {"seeds": [], "seed_steps": [], "eval_freq": r["eval_freq"]},
         )
         d["seeds"].append(r["eval_rewards"])
+        # Legacy runs store eval_rewards only; synthesize steps from eval_freq.
+        if (
+            "eval_steps" in r
+            and r["eval_steps"] is not None
+            and len(r["eval_steps"]) == len(r["eval_rewards"])
+        ):
+            d["seed_steps"].append(np.asarray(r["eval_steps"]))
+        else:
+            d["seed_steps"].append(
+                np.arange(1, len(r["eval_rewards"]) + 1) * r["eval_freq"]
+            )
 
     # Truncate to shortest curve per (task, variant) so stack is rectangular.
     for task, variants in by_task_variant.items():
         for variant, d in variants.items():
             min_len = min(len(s) for s in d["seeds"])
-            d["curves"] = np.stack([s[:min_len] for s in d["seeds"]], axis=0)
-            d["steps"] = np.arange(1, min_len + 1) * d["eval_freq"]
+            truncated = [s[:min_len] for s in d["seeds"]]
+            # Use steps from the first seed (they're all aligned at matching lengths).
+            steps = d["seed_steps"][0][:min_len]
+            if prepend_zero:
+                truncated = [np.concatenate([[0.0], s]) for s in truncated]
+                steps = np.concatenate([[0], steps])
+            d["steps"] = steps
+            d["curves"] = np.stack(truncated, axis=0)
             del d["seeds"]
+            del d["seed_steps"]
     return by_task_variant
 
 
@@ -289,12 +337,27 @@ def _variant_order(family: str):
     return VARIANT_ORDER_DQN if family == "dqn" else VARIANT_ORDER_SAC
 
 
-def plot_panel(ax, variants_data, task_name, family, show_legend=False):
+def _smooth(arr: np.ndarray, window: int):
+    # Centered rolling mean, edges use smaller window (no phantom zeros).
+    # window=1 is a no-op.
+    if window <= 1 or arr.size == 0:
+        return arr
+    kernel = np.ones(window) / window
+    # mode='same' + divide by actual count at edges so the start doesn't
+    # get dragged toward zero.
+    convolved = np.convolve(arr, kernel, mode="same")
+    counts = np.convolve(np.ones_like(arr), kernel, mode="same")
+    return convolved / counts
+
+
+def plot_panel(ax, variants_data, task_name, family, show_legend=False, smooth=1):
     for variant in _variant_order(family):
         if variant not in variants_data:
             continue
         d = variants_data[variant]
         curves, steps = d["curves"], d["steps"]
+        if smooth > 1:
+            curves = np.stack([_smooth(c, smooth) for c in curves], axis=0)
         mean = curves.mean(axis=0)
         std = curves.std(axis=0) if curves.shape[0] > 1 else np.zeros_like(mean)
         is_equi = variant == "equi"
@@ -318,13 +381,13 @@ def plot_panel(ax, variants_data, task_name, family, show_legend=False):
 
     ax.set_title(TASK_LABEL.get(task_name, task_name))
     ax.set_xlabel("Training step")
-    ax.set_ylabel("Discounted eval return")
+    ax.set_ylabel("Eval Discounted Reward")
     ax.grid(True, alpha=0.25)
     if show_legend:
         ax.legend(loc="lower right", framealpha=0.92)
 
 
-def save_figure(grouped, family: str, backend: str, out_dir: Path):
+def save_figure(grouped, family: str, backend: str, out_dir: Path, smooth: int = 1):
     # One figure per (family, backend): 1xN panels across present tasks.
     task_order = (
         TASK_ORDER_BULLETARM if backend == "bulletarm" else TASK_ORDER_MANISKILL
@@ -344,11 +407,14 @@ def save_figure(grouped, family: str, backend: str, out_dir: Path):
         axes = [axes]
 
     for ax, task in zip(axes, tasks_present):
-        plot_panel(ax, grouped[task], task, family, show_legend=False)
+        plot_panel(ax, grouped[task], task, family, show_legend=False, smooth=smooth)
 
     handles, labels = axes[0].get_legend_handles_labels()
+    fig_num = FIG_NUMBER.get((family, backend))
+    # No "Figure N:" prefix — LaTeX caption adds it automatically and the
+    # internal numbering is decoupled from the document's float numbering.
     fig.suptitle(
-        f"Fig {'6' if family == 'dqn' else '7'} {family.upper()} on {BACKEND_LABEL[backend]}",
+        f"{family.upper()} Learning Curves on {BACKEND_LABEL[backend]}",
         y=1.02,
     )
     fig.legend(
@@ -361,9 +427,9 @@ def save_figure(grouped, family: str, backend: str, out_dir: Path):
     )
     fig.tight_layout(rect=(0, 0.06, 1, 1))
 
-    fig_id = "figure6_dqn" if family == "dqn" else "figure7_sac"
+    fig_id = f"fig{fig_num}_{family}_{backend}"
     for ext in ("pdf", "png"):
-        out_path = out_dir / f"{fig_id}_{backend}.{ext}"
+        out_path = out_dir / f"{fig_id}.{ext}"
         fig.savefig(out_path, bbox_inches="tight", dpi=150 if ext == "png" else None)
         print(f"  wrote {out_path}")
     plt.close(fig)
@@ -395,6 +461,13 @@ def main():
         help="one or more output roots to aggregate; first-root wins on dup identity",
     )
     parser.add_argument("--out", type=Path, default=Path("outputs/plots"))
+    parser.add_argument(
+        "--smooth",
+        type=int,
+        default=1,
+        help="centered rolling-mean window (in eval points). 1 = no smoothing. "
+        "Reasonable: 3 for BulletArm DQN (40 evals/run), 1 for MS3 (5 evals/run).",
+    )
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -418,8 +491,12 @@ def main():
 
     for family in ("dqn", "sac"):
         for backend in ("bulletarm", "maniskill"):
-            grouped = group_for_plot(runs, family, backend)
-            save_figure(grouped, family, backend, args.out)
+            # Sparse-reward BulletArm gets a (step=0, R=0) prepend; dense-reward MS3 skips it.
+            prepend_zero = backend == "bulletarm"
+            grouped = group_for_plot(runs, family, backend, prepend_zero=prepend_zero)
+            # MS3 has only 4-5 eval points/run, smoothing destroys the signal
+            smooth = args.smooth if backend == "bulletarm" else 1
+            save_figure(grouped, family, backend, args.out, smooth=smooth)
 
     print("done.")
 

@@ -1,10 +1,10 @@
 """FERM-SAC. Shared CNN encoder (actor + critic), Polyak momentum key
 encoder, CURL InfoNCE over two random-crop views (pad=7, 142 -> 128).
-Encoder trains from critic TD and InfoNCE; actor loss is detached on
+Encoder trains from critic TD and InfoNCE. Actor loss is detached on
 both paths.
 
 Two Polyak rates: cfg.tau for the critic target, cfg.curl_tau for the
-key encoder (faster, since the key side isn't bootstrapped).
+key encoder (faster since the key side isn't bootstrapped).
 """
 
 import copy
@@ -21,7 +21,7 @@ from so2_equi_rl.networks import CNNActor, CNNCritic, CNNEncoder
 from so2_equi_rl.utils import augmentation as aug_mod
 from so2_equi_rl.utils import tile_state
 
-# Fixed offset on cfg.seed so the FERM aug RNG doesn't overlap DrQ (1337) or RAD (2022).
+# Offset on cfg.seed so FERM aug RNG doesn't overlap DrQ (1337) or RAD (2022).
 _AUG_SEED_OFFSET = 3407
 
 
@@ -36,8 +36,7 @@ class SACFERMAgent(SACAgent):
         critic_cls: Type[nn.Module],
     ) -> None:
         # CNN-only. InfoNCE expects flat features, not GeometricTensor.
-        # Fail fast so a wrong encoder_cls doesn't surface as a cryptic
-        # shape error inside the bilinear product.
+        # Fail fast so wrong encoder_cls doesn't surface as a cryptic shape error.
         if encoder_cls is not CNNEncoder:
             raise TypeError(
                 f"SACFERMAgent is CNN-only; got encoder_cls={encoder_cls.__name__}"
@@ -61,8 +60,8 @@ class SACFERMAgent(SACAgent):
         self.curl_temperature = float(cfg.curl_temperature)
         self.ferm_pad = int(cfg.ferm_pad)
 
-        # Shared CNN encoder injected into both actor and critic. critic.parameters()
-        # picks it up, so critic_optim already covers encoder grads from TD.
+        # Shared CNN encoder injected into actor and critic. critic.parameters()
+        # picks it up, so critic_optim covers encoder grads from TD.
         enc_kwargs = {
             "obs_channels": cfg.obs_channels,
             "n_hidden": cfg.n_hidden,
@@ -80,19 +79,19 @@ class SACFERMAgent(SACAgent):
             action_dim=cfg.action_dim,
         ).to(self.device)
 
-        # Bellman target. Polyak at cfg.tau matches base SAC.
+        # Bellman target at cfg.tau, matches base SAC.
         self.critic_target = copy.deepcopy(self.critic)
         for p in self.critic_target.parameters():
             p.requires_grad_(False)
 
-        # Momentum key encoder. Polyak at cfg.curl_tau (faster than the critic target).
+        # Momentum key encoder at cfg.curl_tau (faster than the critic target).
         self.k_encoder = copy.deepcopy(self.q_encoder)
         for p in self.k_encoder.parameters():
             p.requires_grad_(False)
 
         # Paper sec E: contrastive encoder size = 50. Project encoder output
-        # (q_encoder.output_dim = n_hidden for CNN) down to z_dim before the
-        # bilinear product. k_projection is a momentum copy at curl_tau.
+        # down to z_dim before the bilinear product. k_projection is a
+        # momentum copy at curl_tau.
         self.z_dim = int(cfg.z_dim)
         self.q_projection = nn.Linear(self.q_encoder.output_dim, self.z_dim).to(
             self.device
@@ -102,16 +101,15 @@ class SACFERMAgent(SACAgent):
             p.requires_grad_(False)
 
         # CURL bilinear: logits[i, j] = <q_i, W @ k_j>, W is z_dim x z_dim.
-        # Orthogonal init keeps initial logits O(1) so cross-entropy doesn't
-        # saturate at step 0.
+        # Orthogonal init keeps initial logits O(1) so cross-entropy
+        # doesn't saturate at step 0.
         self.W = nn.Parameter(torch.empty(self.z_dim, self.z_dim, device=self.device))
         nn.init.orthogonal_(self.W)
 
         self._init_alpha(cfg)
 
         # Actor optim covers heads only. Encoder lives in critic_optim and
-        # encoder_optim; actor's detach zeros encoder grads on that path
-        # anyway, so an Adam buffer for them would just be wasted memory.
+        # encoder_optim; actor detach zeros encoder grads on that path.
         self._actor_head_params = [
             p
             for name, p in self.actor.named_parameters()
@@ -120,8 +118,7 @@ class SACFERMAgent(SACAgent):
         self.actor_optim = torch.optim.Adam(self._actor_head_params, lr=cfg.actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
         # Separate encoder_optim so InfoNCE and TD can run different LRs.
-        # The two losses have different gradient scales. Includes the query
-        # projection since InfoNCE must train it alongside the encoder.
+        # Includes the query projection since InfoNCE trains it with the encoder.
         self._contrastive_params = (
             list(self.q_encoder.parameters())
             + list(self.q_projection.parameters())
@@ -150,15 +147,15 @@ class SACFERMAgent(SACAgent):
         next_obs_tiled = tile_state(batch.next_obs, batch.next_state)
 
         # Critic step on raw (non-augmented) obs. Encoder rotation-awareness
-        # comes from the InfoNCE pretext below, not from aug'ing the Q-path.
+        # comes from InfoNCE below, not from augmenting the Q-path.
         with torch.no_grad():
             next_action, next_log_prob, _ = self.actor.sample(next_obs_tiled)
             q1_next, q2_next = self.critic_target(next_obs_tiled, next_action)
             min_q_next = torch.min(q1_next, q2_next) - self.alpha * next_log_prob
             y = reward + self.gamma * (1.0 - done) * min_q_next
 
-        # critic backward flows into q_encoder through the critic path. That's
-        # one of the two shared-encoder training signals; InfoNCE is the other.
+        # critic backward flows into q_encoder through the critic path.
+        # One of the two shared-encoder signals; InfoNCE is the other.
         q1, q2 = self.critic(obs_tiled, batch.action)
         critic_loss = F.mse_loss(q1, y) + F.mse_loss(q2, y)
 
@@ -170,7 +167,7 @@ class SACFERMAgent(SACAgent):
 
         # Actor step. Two detaches keep actor-loss gradient off the shared
         # encoder: actor.detach_encoder cuts the policy path, critic(detach)
-        # cuts the Q-path used to score new_action.
+        # cuts the Q-path scoring new_action.
         new_action, log_prob, _ = self.actor.sample(obs_tiled)
         q1_new, q2_new = self.critic(obs_tiled, new_action, detach_encoder=True)
         min_q_new = torch.min(q1_new, q2_new)
@@ -192,11 +189,11 @@ class SACFERMAgent(SACAgent):
         self.alpha_optim.step()
 
         # InfoNCE step. Paper sec E FERM: two independent random crops
-        # (142x142 -> 128x128) for the query and key. Pulls (q, k) from the
-        # same row together and pushes other pairings apart.
+        # (142 -> 128) for query and key. Pulls (q, k) from the same row
+        # together and pushes other pairings apart.
         B = batch.obs.shape[0]
 
-        # random_crop uses a CPU generator; move raw obs to cpu for the
+        # random_crop's generator is on cpu; move raw obs to cpu for the
         # crop, then back to device for encoding.
         obs_cpu = batch.obs.cpu()
         q_obs = aug_mod.random_crop(
@@ -208,9 +205,9 @@ class SACFERMAgent(SACAgent):
         q_obs_tiled = tile_state(q_obs, batch.state)
         k_obs_tiled = tile_state(k_obs, batch.state)
 
-        # Key side is frozen via requires_grad=False; no_grad also drops key
-        # activations. Projections map encoder output (q_encoder.output_dim)
-        # down to z_dim (paper sec E: FERM z_dim=50).
+        # Key side is frozen via requires_grad=False; no_grad also drops
+        # key activations. Projections map encoder output down to z_dim
+        # (paper sec E: FERM z_dim=50).
         q_feat = self.q_projection(self.q_encoder(q_obs_tiled).view(B, -1))
         with torch.no_grad():
             k_feat = self.k_projection(self.k_encoder(k_obs_tiled).view(B, -1))
@@ -240,8 +237,7 @@ class SACFERMAgent(SACAgent):
             for p, p_k in zip(self.q_encoder.parameters(), self.k_encoder.parameters()):
                 p_k.mul_(1.0 - self.curl_tau).add_(p.data, alpha=self.curl_tau)
 
-            # k_projection tracks q_projection by the same Polyak rule. CURL
-            # convention keeps query and key projections in lockstep.
+            # k_projection tracks q_projection by the same Polyak rule.
             for p, p_k in zip(
                 self.q_projection.parameters(), self.k_projection.parameters()
             ):
@@ -258,9 +254,9 @@ class SACFERMAgent(SACAgent):
         }
 
     def state_dict(self) -> Dict[str, Any]:
-        # q_encoder is saved separately even though actor/critic state_dicts
-        # carry an "encoder.*" prefix pointing at the same weights, so the
-        # checkpoint format stays stable if a refactor breaks that aliasing.
+        # q_encoder saved separately even though actor/critic state_dicts
+        # alias the same weights under "encoder.*". Keeps checkpoint format
+        # stable if a refactor breaks that aliasing.
         return {
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),

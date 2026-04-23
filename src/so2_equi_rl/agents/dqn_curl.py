@@ -1,14 +1,8 @@
-"""CURL-DQN. Adds a CURL InfoNCE loss over two random-crop views, sharing
-the Q-net's conv stack with the contrastive head (pad=7, 142 -> 128).
-
-The conv stack trains from TD (self.optim) and InfoNCE (self.encoder_optim).
-Both run per update with distinct Adam states so the two gradient scales
-stay decoupled. Momentum key-net is a frozen Polyak copy of policy_net at
-cfg.curl_tau; since the key side isn't bootstrapped, curl_tau can run
-faster than cfg.tau without destabilising the TD target.
-
-CNN-only (same reason as sac_ferm.py): the bilinear head expects a flat
-feature vector and EquiDQNNet's structured output doesn't plug in cleanly.
+"""CURL-DQN. InfoNCE over two random-crop views shares the Q-net's conv stack
+with the contrastive head (pad=7, 142 -> 128). TD and InfoNCE train through
+separate Adam optimisers so gradient scales stay decoupled. CNN-only: the
+bilinear head needs a flat feature vector and EquiDQNNet's structured output
+doesn't plug in cleanly.
 """
 
 import copy
@@ -25,8 +19,8 @@ from so2_equi_rl.networks import CNNDQNNet
 from so2_equi_rl.utils import augmentation as aug_mod
 from so2_equi_rl.utils import tile_state
 
-# Fixed offset so the CURL aug RNG doesn't overlap DQN-RAD (2023),
-# SAC-DrQ (1337), RAD-SAC (2022), FERM (3407), or DQN-DrQ (4242).
+# Offset so CURL aug RNG doesn't overlap DQN-RAD (2023), SAC-DrQ (1337),
+# RAD-SAC (2022), FERM (3407), or DQN-DrQ (4242).
 _AUG_SEED_OFFSET = 5150
 
 
@@ -39,7 +33,7 @@ class DQNCURLAgent(DQNAgent):
         net_cls: Type[nn.Module],
     ) -> None:
         # CNN-only. InfoNCE expects flat features; EquiDQNNet's structured
-        # output would need a GroupPooling + flatten that the paper's CURL
+        # output would need GroupPooling + flatten that the paper's CURL
         # baseline doesn't use. Fail fast instead of silently misbehaving.
         if net_cls is not CNNDQNNet:
             raise TypeError(f"DQNCURLAgent is CNN-only; got net_cls={net_cls.__name__}")
@@ -53,8 +47,8 @@ class DQNCURLAgent(DQNAgent):
 
         # Momentum key-net. Full net deepcopy (not just .conv) keeps the
         # checkpoint format uniform and avoids the buffer-aliasing pitfalls
-        # that bit SAC-DrQ's state_dict path. Only .features() is ever
-        # called on it, so the fc head is dead weight but cheap.
+        # that bit SAC-DrQ's state_dict path. Only .features() is called,
+        # so the fc head is dead weight but cheap.
         self.k_net = copy.deepcopy(self.policy_net)
         for p in self.k_net.parameters():
             p.requires_grad_(False)
@@ -67,9 +61,9 @@ class DQNCURLAgent(DQNAgent):
         )
         nn.init.orthogonal_(self.W)
 
-        # Separate encoder_optim over the conv stack + W. self.optim already
-        # owns all policy_net params (conv included); both optimizers touch
-        # the same conv tensors but keep distinct Adam moments.
+        # Separate encoder_optim over the conv stack + W. self.optim also
+        # owns the conv params; both optimizers touch the same tensors but
+        # keep distinct Adam moments.
         self.encoder_optim = torch.optim.Adam(
             list(self.policy_net.conv.parameters()) + [self.W],
             lr=cfg.encoder_lr,
@@ -93,8 +87,8 @@ class DQNCURLAgent(DQNAgent):
         obs_tiled = tile_state(batch.obs, batch.state)
         next_obs_tiled = tile_state(batch.next_obs, batch.next_state)
 
-        # TD step. Identical to DQNAgent.update's body; encoder grads from
-        # TD flow through self.optim, InfoNCE will add a second pass below.
+        # TD step. Mirrors DQNAgent.update; encoder grads from TD flow
+        # through self.optim. InfoNCE adds a second pass below.
         action_idx = batch.action.long()
         p_id = action_idx[:, 0]
         xy_id = action_idx[:, 1]
@@ -120,9 +114,9 @@ class DQNCURLAgent(DQNAgent):
             nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.grad_clip_norm)
         self.optim.step()
 
-        # InfoNCE step. Paper sec E CURL: two independent random crops (142 ->
-        # 128) for the query and key. Pulls (q, k) from the same row together
-        # and pushes other pairings apart.
+        # InfoNCE step. Paper sec E CURL: two independent random crops
+        # (142 -> 128) for query and key. Pulls (q, k) from the same row
+        # together and pushes other pairings apart.
         obs_cpu = batch.obs.cpu()
         q_obs = aug_mod.random_crop(
             obs_cpu, pad=self.curl_pad, generator=self._aug_gen

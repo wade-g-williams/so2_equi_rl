@@ -40,7 +40,7 @@ class SACConfig(TrainConfig):
     # None resolves to -action_dim inside SACAgent.
     target_entropy: Optional[float] = None
 
-    # Per-optimizer global-norm clip. None = disabled (matches paper repo).
+    # Per-optimizer global-norm clip. None = paper default.
     grad_clip_norm: Optional[float] = None
 
     # UTD ratio. 1 = standard SAC.

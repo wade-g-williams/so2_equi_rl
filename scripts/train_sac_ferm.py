@@ -39,12 +39,6 @@ def main() -> None:
         default=None,
         help="path to a checkpoint .pt to resume from",
     )
-    parser.add_argument(
-        "--pretrained-encoder",
-        type=Path,
-        default=None,
-        help="path to a pretrained encoder .pt from scripts/pretrain_ferm.py",
-    )
     args = parser.parse_args()
 
     cfg = SACFERMConfig(**extract_dataclass_kwargs(args, SACFERMConfig))
@@ -81,22 +75,6 @@ def main() -> None:
         cfg, run_name=args.run_name, alg_family="sac", alg_variant="ferm"
     )
     print(f"[train_sac_ferm] run dir: {logger.run_dir}")
-
-    if args.pretrained_encoder is not None:
-        # Paper Appendix F pretrains the FERM encoder for 1600 InfoNCE steps
-        # before SAC kicks in. scripts/pretrain_ferm.py produces the .pt
-        # we load here. actor and critic share agent.q_encoder by reference,
-        # so updating q_encoder's state_dict propagates to them automatically.
-        import torch
-
-        state = torch.load(args.pretrained_encoder, map_location=agent.device)
-        agent.q_encoder.load_state_dict(state["q_encoder"])
-        agent.k_encoder.load_state_dict(state["q_encoder"])
-        with torch.no_grad():
-            agent.W.copy_(state["W"].to(agent.device))
-        print(
-            f"[train_sac_ferm] loaded pretrained encoder from {args.pretrained_encoder}"
-        )
 
     trainer = SACTrainer(cfg, agent, train_env, eval_env, buffer, logger)
     trainer.run(resume_path=args.resume)

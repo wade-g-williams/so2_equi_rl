@@ -1,0 +1,67 @@
+# Reproduction matrix for Wang et al. ICLR 2022 Fig 6 (DQN) and Fig 7 (SAC).
+# scripts/launch_matrix.py expands this into Cells, filtering invalid
+# (algo, model) combos (augmentation variants are CNN-only) and per-backend
+# task lists (ManiSkill only wires PickCube-v1).
+#
+# Valid cell count after filters:
+#   Base algos (dqn, sac) x {cnn, equi}   x 4 task-backends x 2 seeds = 32
+#   Aug  algos (6 variants) x cnn only    x 4 task-backends x 2 seeds = 48
+#   Total: 80 cells.
+
+defaults:
+  # Paper's training horizon. Existing 50k SAC runs can be cropped in
+  # the plotter (no LR/alpha/entropy schedule depends on total_steps,
+  # so the first 20k of a 50k run is identical to a fresh 20k run).
+  total_steps: 20000
+
+matrix:
+  # Algo keys must appear in so2_equi_rl.launch._ALGO_SCRIPTS. Augmentation
+  # variants (anything other than 'dqn' / 'sac') are CNN-only and will be
+  # filtered against any model != 'cnn' during expansion.
+  algos:
+    - dqn       # baseline DQN (Fig 6)
+    - dqn_drq   # DrQ-augmented DQN
+    - dqn_curl  # CURL-augmented DQN
+    # - dqn_rad # implemented, not in final sweep
+    - sac       # baseline SAC (Fig 7)
+    - sac_drq   # DrQ-augmented SAC
+    # - sac_rad # implemented, not in final sweep
+    - sac_ferm  # FERM-augmented SAC
+
+  # Network variant. equi = SO(2)-equivariant backbone; cnn = baseline.
+  # Only combined with the two base algos (dqn, sac); aug variants
+  # always run on cnn per the paper architectures.
+  models:
+    - cnn
+    - equi
+
+  # Tasks per backend. BulletArm uses close_loop_* naming. ManiSkill has
+  # PickCube-v1 in scope here; PullCube-v1 and StackCube-v1 are wired in
+  # envs/maniskill_wrapper.py + maniskill_experts.py and can be added below
+  # as the paper-extension scope grows.
+  tasks_per_backend:
+    bulletarm:
+      - close_loop_household_picking  # paper §6.1 "Object Picking" benchmark
+      - close_loop_block_pulling
+      - close_loop_drawer_opening
+    maniskill:
+      - PickCube-v1
+      # - PullCube-v1    # paper-extension, uncomment to include
+      # - StackCube-v1   # paper-extension, uncomment to include
+
+  seeds:
+    - 0
+    - 1
+
+# Per-job VRAM budget (MiB), keyed by "<backend>_<model>". Derived from
+# empirical footprint of real training processes on an RTX 3000 Ada:
+#   - MS3 equi DQN (num_envs=32, obs=128x128): ~4950 MiB.
+#     Budgeted to 7000 MiB to cover SAC-FERM's extra heads + momentum
+#     encoder + bilinear W with a ~40% margin.
+#   - BulletArm DrQ DQN: ~2390 MiB; budgeted to 2500/3500.
+# Override globally at the CLI with --vram-override=<MiB> if needed.
+per_job_vram_mib:
+  bulletarm_cnn: 2500
+  bulletarm_equi: 3500
+  maniskill_cnn: 4500
+  maniskill_equi: 7000

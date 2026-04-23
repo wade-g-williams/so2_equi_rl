@@ -1,6 +1,4 @@
-"""DQNTrainer. Scripted-expert warmup snapped to the discrete grid,
-epsilon-greedy exploration with linear decay over cfg.explore_steps.
-"""
+"""DQNTrainer. Expert warmup snapped to the grid, eps-greedy with linear decay."""
 
 import torch
 
@@ -17,9 +15,7 @@ class DQNTrainer(BaseTrainer):
     agent: DQNAgent
 
     def _warmup_action(self, state: torch.Tensor, obs: torch.Tensor) -> ActionPair:
-        # Scripted planner outputs continuous physical actions. encode_action
-        # snaps to the grid cell, decode_action re-emits the realized physical
-        # command so env.step, reward, and the buffer all agree on the action.
+        # Snap planner action to grid, then re-emit so env.step and buffer agree.
         physical_raw = self.train_env.get_expert_action()
         indices = self.agent.encode_action(physical_raw)
         physical_on_grid = self.agent.decode_action(indices)
@@ -34,7 +30,7 @@ class DQNTrainer(BaseTrainer):
         obs: torch.Tensor,
         global_step: int,
     ) -> ActionPair:
-        # Linear epsilon decay. Floors at final_eps after explore_steps.
+        # Linear epsilon decay, floors at final_eps after explore_steps.
         cfg = self.cfg
         frac = min(global_step / max(cfg.explore_steps, 1), 1.0)
         eps = cfg.init_eps + frac * (cfg.final_eps - cfg.init_eps)

@@ -1,28 +1,20 @@
-"""Image encoders. Equivariant C_N stack from Wang et al. (2022) and a
-plain CNN baseline. Default C_8 matches the paper.
-"""
+"""Image encoders. Equivariant C_N stack from Wang et al. 2022 and a plain CNN baseline."""
 
 import torch
 
-from so2_equi_rl.networks._equiv_compat import enn, gspaces
+from so2_equi_rl.networks.equiv_compat import enn, gspaces
 
-# The block stack reduces 128 spatial down to 1 exactly. Other sizes
-# silently break the .view(B, -1) flatten in the actor and critic heads.
+# Block stack reduces 128 spatial to 1; other sizes break the flatten in the heads.
 EXPECTED_OBS_SIZE = 128
 
 
 def irrep1_multiplicity(group_order: int) -> int:
-    # irrep(1) is 2D for N >= 3 (one copy covers (dx, dy)). For N = 2 it's
-    # the 1D sign rep, so we need two copies.
+    # irrep(1) is 2D for N >= 3; for N=2 it's the 1D sign rep so we need two copies.
     return 2 if group_order == 2 else 1
 
 
 class EquiEncoder(torch.nn.Module):
-    """C_N-equivariant conv encoder. Seven R2Conv blocks with regular_repr
-    hidden fields. Takes (B, obs_channels, 128, 128), returns a
-    GeometricTensor with n_hidden * N channels at 1x1 spatial. Rotating
-    the input by (360 / N) degrees cyclically permutes the feature map.
-    """
+    """C_N-equivariant conv encoder. Seven R2Conv blocks, 128x128 input to 1x1 output."""
 
     def __init__(
         self,
@@ -93,8 +85,7 @@ class EquiEncoder(torch.nn.Module):
         )
 
         self.output_type = regular_types[-1]
-        # Flat channel count after the final 1x1 collapse. Exposed so heads
-        # and tests don't have to reach into FieldType internals.
+        # Flat channel count after the 1x1 collapse.
         self.output_dim = mults[-1] * group_order
 
     def forward(self, obs: torch.Tensor) -> enn.GeometricTensor:
@@ -108,11 +99,7 @@ class EquiEncoder(torch.nn.Module):
 
 
 class CNNEncoder(torch.nn.Module):
-    """Plain-CNN baseline. Channel schedule (n_hidden // 8, // 4, // 2, 1x,
-    2x, 2x, 1x) lines up with EquiEncoder so the CNN SAC run is comparable.
-    Takes (B, obs_channels, 128, 128), returns (B, n_hidden, 1, 1).
-    group_order is accepted for kwarg parity with EquiEncoder and ignored.
-    """
+    """Plain-CNN baseline. Channel schedule matches EquiEncoder for a comparable SAC run."""
 
     def __init__(
         self,
@@ -132,7 +119,7 @@ class CNNEncoder(torch.nn.Module):
         self.n_hidden = n_hidden
         self.group_order = group_order
 
-        # Channel schedule. Block 6 is 2*n_hidden (not 1*n_hidden) to match the reference repo.
+        # Channel schedule, block 6 is 2*n_hidden to match the reference repo.
         c = (
             n_hidden // 8,
             n_hidden // 4,

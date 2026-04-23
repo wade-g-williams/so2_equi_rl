@@ -1,8 +1,8 @@
 """DQN with Polyak target updates and a 4-axis discrete action decoder.
 
-net_cls is injected so one update() body covers the equivariant run and
-the CNN baseline. Buffer stores 4-D grid indices as float32, decode_action
-runs at the env.step boundary to convert back to 5-D physical (pxyzr).
+net_cls is injected so one update() body covers equivariant and CNN runs.
+Buffer stores 4-D grid indices as float32; decode_action converts back
+to 5-D physical (pxyzr) at the env.step boundary.
 """
 
 import copy
@@ -40,7 +40,7 @@ class DQNAgent(Agent):
             "n_theta": cfg.n_theta,
         }
         self.policy_net = net_cls(**net_kwargs).to(self.device)
-        # deepcopy after .to() so e2cnn doesn't rebuild the kernel basis on the wrong device.
+        # deepcopy after .to() so e2cnn doesn't rebuild the basis on the wrong device.
         self.target_net = copy.deepcopy(self.policy_net)
         self.target_net.requires_grad_(False)
 
@@ -59,8 +59,7 @@ class DQNAgent(Agent):
         self.n_theta = cfg.n_theta
 
     def _init_action_grid(self, cfg: DQNConfig) -> None:
-        # Lookup tables held on CPU. encode/decode move them to the input
-        # device per call, which is free for tensors this small.
+        # Lookup tables on CPU, moved to input device per call (cheap for small tensors).
         self._p_table = torch.tensor(
             [cfg.p_range[0], cfg.p_range[1]], dtype=torch.float32
         )  # (n_p,)
@@ -101,8 +100,7 @@ class DQNAgent(Agent):
 
     def encode_action(self, physical: Tensor) -> Tensor:
         # physical: (B, 5) float [p, dx, dy, dz, dtheta].
-        # Returns (B, 4) long indices via argmin distance per axis. Mirrors
-        # the paper repo's getActionFromPlan quantization.
+        # Returns (B, 4) long indices via argmin distance per axis.
         device = physical.device
         p_table = self._p_table.to(device)
         xy_table = self._xy_table.to(device)
@@ -110,7 +108,7 @@ class DQNAgent(Agent):
         theta_table = self._theta_table.to(device)
 
         p_id = (physical[:, 0:1] - p_table.unsqueeze(0)).abs().argmin(dim=1)
-        # Joint argmin over (dx, dy) so off-grid commands snap to the nearest cell.
+        # Joint argmin over (dx, dy) so off-grid snaps to the nearest cell.
         dxy = physical[:, 1:3]
         dist_xy = (dxy.unsqueeze(1) - xy_table.unsqueeze(0)).pow(2).sum(dim=-1)
         xy_id = dist_xy.argmin(dim=1)
@@ -125,7 +123,7 @@ class DQNAgent(Agent):
         eps: float = 0.0,
         deterministic: bool = False,
     ) -> ActionPair:
-        # deterministic=True forces eps=0 (eval rollouts use pure greedy).
+        # deterministic=True forces eps=0 for eval rollouts.
         if deterministic:
             eps = 0.0
 
@@ -136,7 +134,7 @@ class DQNAgent(Agent):
             q_all = self.policy_net(tiled)  # (B, n_xy, n_z, n_theta, n_p)
             B = q_all.shape[0]
 
-            # Greedy: argmax over flattened action space, then unravel.
+            # Argmax over flattened action space, then unravel.
             flat_argmax = q_all.reshape(B, -1).argmax(dim=1)
             indices = self._unravel(flat_argmax)  # (B, 4) long
 

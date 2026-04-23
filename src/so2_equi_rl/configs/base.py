@@ -21,8 +21,8 @@ class TrainConfig:
     obs_size: int = 128
     max_steps: int = 50  # per-episode cap
 
-    # ManiSkill overhead camera knobs. Matches Joey's eq_sac maniskill branch:
-    # 1 m camera, 60 deg FOV, symmetric gripper-relative depth clamp.
+    # ManiSkill overhead camera knobs. 1 m camera, 60 deg FOV, symmetric
+    # gripper-relative depth clamp.
     ms3_camera_height: float = 1.0  # meters above workspace
     ms3_camera_fov: float = 60.0  # degrees, wide enough to cover ~1.15 m at 1 m
     ms3_depth_max: float = 2.0  # meters, symmetric clamp on gripper-relative depth
@@ -35,8 +35,8 @@ class TrainConfig:
     ms3_reward_mode: str = "normalized_dense"
 
     # Training budget and cadence. total_steps counts UPDATE iterations
-    # (gradient steps), matching paper repo's max_train_step and the x-axis
-    # of paper Figures 6/7/8. 20000 is paper's spec for both DQN and SAC.
+    # (gradient steps), which is the x-axis of paper Figures 6/7/8.
+    # 20000 is paper's spec for both DQN and SAC.
     total_steps: int = 20_000
     warmup_steps: int = 1_000  # kept for backward compat, superseded by warmup_episodes
     # Paper Appendix F: SAC warmup is 20 episodes, DQN is 100 episodes.
@@ -44,8 +44,8 @@ class TrainConfig:
     batch_size: int = 64
     buffer_capacity: int = 100_000
 
-    # Cadences in update count (matching paper repo main.py). Trainer enforces
-    # cadence % n_updates_per_step == 0, which is trivially true for UTD=1.
+    # Cadences in update count. Trainer enforces cadence % n_updates_per_step == 0,
+    # which is trivially true for UTD=1.
     log_every: int = 32
     eval_every: int = (
         500  # paper spec (Fig 6/7/8: "evaluation every 500 training steps")

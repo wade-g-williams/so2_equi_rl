@@ -1,11 +1,7 @@
-"""Wrapper around the helping_hands_rl_envs PyBullet task library.
+"""Wrapper around helping_hands_rl_envs. Batched (B, ...) tensor interface.
 
-Hides the in-process and worker-subprocess runners behind one batched
-interface with fixed tensor shapes. Restricted to close-loop tasks so
-obs is always a top-down heightmap.
-
-No action decoding here. The agent hands in a 5-D tensor and the wrapper
-passes it straight through; [-1, 1] to physical-unit scaling lives in the agent.
+Restricted to close-loop tasks so obs is a top-down heightmap. Agent owns
+action decoding; [-1, 1] to physical scaling lives in the agent, not here.
 """
 
 import os
@@ -14,28 +10,22 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
-# helping_hands_rl_envs ships an empty __init__, so __file__ is None and
-# random_object.py crashes on os.path.dirname(hhe.__file__). Patch it here
-# so ms3-only workflows that skip wrapper.py don't need hhe installed.
+# helping_hands_rl_envs ships an empty __init__ (random_object.py reads
+# hhe.__file__). Patch it here so the import succeeds.
 import helping_hands_rl_envs as _hhe
 
 if _hhe.__file__ is None:
-    # __path__ points at the namespace-package root; the real package with
-    # simulators/urdf assets lives one level deeper.
+    # __path__ is the namespace root; real package is one deeper.
     _hhe.__file__ = os.path.join(
         list(_hhe.__path__)[0], "helping_hands_rl_envs", "__init__.py"
     )
 
 from helping_hands_rl_envs import env_factory  # noqa: E402, must follow the patch
 
-# Re-export so existing `from so2_equi_rl.envs.wrapper import EnvStep`
-# callers keep working.
+# Re-export EnvStep so existing import paths keep working.
 from so2_equi_rl.envs import EnvStep  # noqa: E402, F401
 
-# Paper's workspace. Paper sec C: 0.4m x 0.4m x 0.24m. Paper repo
-# parameters.py:100-102 sets z = [0.01, 0.25] (= 0.24m). Our previous
-# z = [0.00, 1.00] gave BulletArm a 1.0m soft bound that silently let
-# objects and the gripper occupy positions paper runs never see.
+# Paper sec C workspace, 0.4m x 0.4m x 0.24m.
 _DEFAULT_WORKSPACE = np.asarray(
     [
         [0.25, 0.65],  # x: table's long axis, 0.4m
@@ -46,11 +36,7 @@ _DEFAULT_WORKSPACE = np.asarray(
 )
 
 
-# Fallback step sizes for the library's scripted expert (5 cm, 22.5 deg).
-# EnvWrapper takes dpos/drot ctor args so the planner's step size stays
-# aligned with the agent's action grid. A mismatch silently corrupts warmup
-# data (env executes a 5 cm expert move, buffer stores the snapped grid
-# index, Q-learning trains on transitions where action and next_obs disagree).
+# Scripted-expert fallback step sizes (5 cm, 22.5 deg). Must match agent's action grid.
 _EXPERT_DPOS = 0.05
 _EXPERT_DROT = float(np.pi / 8)
 
@@ -62,8 +48,7 @@ _ROBOT = "kuka"  # Kuka LBR iiwa arm
 _PHYSICS_MODE = "fast"  # lower-fidelity physics, much faster
 
 
-# Locking to close-loop tasks keeps the obs a plain top-down heightmap
-# (no in-hand camera).
+# Close-loop only so obs stays a plain top-down heightmap.
 _CLOSE_LOOP_ENVS = {
     "close_loop_block_picking",
     "close_loop_block_reaching",
@@ -117,10 +102,7 @@ class EnvWrapper:
             "seed": seed,
         }
 
-        # Scripted expert config (used to generate demos). The planner's
-        # dpos/drot must match the agent's action grid / scaling so the
-        # transitions stored in the buffer use the same action units the
-        # env actually executed.
+        # Scripted expert config; dpos/drot must match the agent's action grid.
         if planner_config is None:
             planner_config = {
                 "random_orientation": False,
@@ -128,8 +110,7 @@ class EnvWrapper:
                 "drot": float(drot) if drot is not None else _EXPERT_DROT,
             }
 
-        # createEnvs returns a SingleRunner when num_processes=0, else a
-        # MultiRunner spawning num_processes workers.
+        # createEnvs returns SingleRunner for num_processes=0, else MultiRunner.
         self._runner = env_factory.createEnvs(
             num_processes, "pybullet", env_name, env_config, planner_config
         )
@@ -144,7 +125,7 @@ class EnvWrapper:
         self._is_single = num_processes == 0
 
     def reset(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Library also returns an in-hand camera obs; close-loop tasks don't use it.
+        # _in_hand is an in-hand camera obs; close-loop tasks don't use it.
         states, _in_hand, obs = self._runner.reset()
         return self._to_batched_obs(states, obs)
 
@@ -157,11 +138,8 @@ class EnvWrapper:
         if self._is_single:
             actions_np = actions_np[0]
 
-        # SingleRunner.step() silently drops the auto_reset kwarg (runner.py:419)
-        # while MultiRunner honors it. Without a reset the env sits terminal,
-        # every step returns done=True reward=0, the buffer fills with ghosts,
-        # V(s) collapses to 0, no learning. Emulate MultiRunner's semantics
-        # here: reset on done when single.
+        # SingleRunner.step() drops auto_reset (runner.py:419), MultiRunner honors it.
+        # Emulate MultiRunner's semantics here: reset on done when single.
         (states, _in_hand, obs), rewards, dones = self._runner.step(
             actions_np, auto_reset=True
         )
@@ -170,7 +148,7 @@ class EnvWrapper:
 
         states_t, obs_t = self._to_batched_obs(states, obs)
 
-        # Force everything to (B,). Single returns scalars, Multi returns (N,) arrays.
+        # Force (B,). Single returns scalars, Multi returns (N,) arrays.
         if self._is_single:
             rewards_np = np.asarray([rewards], dtype=np.float32)
             dones_np = np.asarray([float(dones)], dtype=np.float32)
@@ -178,7 +156,7 @@ class EnvWrapper:
             rewards_np = np.asarray(rewards, dtype=np.float32)
             dones_np = np.asarray(dones, dtype=np.float32)
 
-        # BulletArm rewards are sparse {0, 1}; success iff reward is 1.
+        # BulletArm rewards are sparse {0, 1}; success == reward 1.
         success_np = (rewards_np > 0.5).astype(np.float32)
         return EnvStep(
             state=states_t,
@@ -189,7 +167,7 @@ class EnvWrapper:
         )
 
     def get_expert_action(self) -> torch.Tensor:
-        # Asks the scripted planner what it would do next. Used to fill the buffer with demos.
+        # Scripted planner's next action for warmup demos.
         actions = self._runner.getNextAction()
         actions = np.asarray(actions, dtype=np.float32)
         if self._is_single:
@@ -202,8 +180,7 @@ class EnvWrapper:
     def _to_batched_obs(
         self, states: np.ndarray, obs: np.ndarray
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Force both runners' shapes into a common (B, ...) layout.
-        # Single gives (1,) and (1, H, W); Multi gives (N, 1) and (N, 1, H, W).
+        # Force both runners into a common (B, ...) layout.
         states = np.asarray(states, dtype=np.float32).reshape(
             self.batch_size, self.state_dim
         )

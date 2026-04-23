@@ -1,12 +1,10 @@
-"""Fixed-capacity replay buffer over preallocated CPU tensors. Once full,
-new transitions overwrite the oldest. obs and next_obs are quantized to
-uint8 on push and dequantized on sample (~4x memory savings, 13 GB -> 3.25
-GB at default capacity). sample() returns float32 so agent code doesn't care.
+"""Fixed-capacity replay buffer over preallocated CPU tensors.
 
-SO(2) augmentation: with so2_aug_k>0, every pushed transition is followed
-by k rotated copies (random theta per copy). Paper Fig 7 uses k=4. Action
-must be 5-dim [p, dx, dy, dz, dr]; rotation applies to obs, next_obs, and
-(dx, dy) only. Paper: Wang et al. 2022, Sec 6.2 + utils/torch_utils.py.
+obs and next_obs are uint8-quantized on push and dequantized on sample
+(~4x memory, 13 GB -> 3.25 GB at default capacity). sample() returns float32.
+
+SO(2) aug: so2_aug_k>0 pushes k rotated copies per transition (Fig 7 uses k=4).
+Action must be 5-dim [p, dx, dy, dz, dr]; rotation applies to obs, next_obs, (dx, dy).
 """
 
 from typing import NamedTuple, Tuple
@@ -26,7 +24,7 @@ class Transition(NamedTuple):
     done: torch.Tensor
 
     def to(self, device, non_blocking: bool = False) -> "Transition":
-        # Move every field in one pass so device placement stays out of the SAC update hot path.
+        # Move every field in one pass; keeps device placement off the update hot path.
         return Transition(
             state=self.state.to(device, non_blocking=non_blocking),
             obs=self.obs.to(device, non_blocking=non_blocking),
@@ -65,9 +63,7 @@ class ReplayBuffer:
             raise ValueError(f"capacity must be positive, got {capacity}")
         if so2_aug_k < 0:
             raise ValueError(f"so2_aug_k must be >= 0, got {so2_aug_k}")
-        # so2_aug assumes the 5-dim SAC action layout [p, dx, dy, dz, dr].
-        # DQN stores integer grid indices (action_dim=4) and never needs aug
-        # per the paper (Fig 6 uses no aug buffer).
+        # so2_aug needs the 5-dim SAC action layout; DQN uses 4-dim indices and no aug.
         if so2_aug_k > 0 and action_dim != 5:
             raise ValueError(
                 f"so2_aug_k>0 requires action_dim=5 (SAC layout), got {action_dim}"
@@ -76,13 +72,11 @@ class ReplayBuffer:
         self._obs_clip = float(obs_clip)
         self._obs_scale = float(obs_scale)
         self._so2_aug_k = int(so2_aug_k)
-        # SAC stores tanh-squashed actions in [-1, 1]; DQN stores integer
-        # grid indices cast to float32. Flip off for the latter.
+        # SAC stores tanh-squashed actions in [-1, 1]; DQN stores grid indices and disables.
         self._enforce_unscaled_action_range = bool(enforce_unscaled_action_range)
 
-        # CPU float32 everywhere except obs/next_obs (quantized uint8 in [0, 255],
-        # dequantized only at sample()). Fancy-index sampling copies, so returned
-        # batches don't alias the storage.
+        # CPU float32 everywhere except obs/next_obs (uint8, dequantized at sample()).
+        # Fancy-index sampling copies, so returned batches don't alias storage.
         self._state = torch.zeros((capacity, state_dim), dtype=torch.float32)
         self._obs = torch.zeros((capacity, *obs_shape), dtype=torch.uint8)
         self._action = torch.zeros((capacity, action_dim), dtype=torch.float32)
@@ -91,7 +85,7 @@ class ReplayBuffer:
         self._next_obs = torch.zeros((capacity, *obs_shape), dtype=torch.uint8)
         self._done = torch.zeros((capacity,), dtype=torch.float32)
 
-        # Torch Generator keeps sampling reproducible without pulling in numpy.
+        # Torch Generator for reproducible sampling without a numpy dependency.
         self._gen = torch.Generator()
         self._gen.manual_seed(seed)
 
@@ -103,12 +97,12 @@ class ReplayBuffer:
         self._action_dim = action_dim
 
     def _quantize_obs(self, obs: torch.Tensor) -> torch.Tensor:
-        # Clip to the heightmap ceiling (BulletArm workspace bound) and rescale so obs_scale -> 255.
+        # Clip to heightmap ceiling, rescale so obs_scale -> 255.
         scaled = obs.clamp(min=0.0, max=self._obs_clip) * (255.0 / self._obs_scale)
         return scaled.round().clamp(0, 255).to(torch.uint8)
 
     def _dequantize_obs(self, obs_u8: torch.Tensor) -> torch.Tensor:
-        # Max quantization error is obs_scale/255.
+        # Max quant error is obs_scale/255.
         return obs_u8.to(torch.float32) * (self._obs_scale / 255.0)
 
     def push(
@@ -127,8 +121,7 @@ class ReplayBuffer:
                 f"batch size {batch} exceeds buffer capacity {self.capacity}"
             )
 
-        # Shape check every field. (B, 1) reward/done would broadcast into
-        # self._reward[idxs] silently and corrupt the buffer.
+        # Shape-check every field. (B, 1) reward/done would silently broadcast into storage.
         schema = (
             ("state", state, (batch, self._state_dim)),
             ("obs", obs, (batch, *self._obs_shape)),
@@ -150,10 +143,7 @@ class ReplayBuffer:
         next_state_c = _as_cpu_f32(next_state)
         done_c = _as_cpu_f32(done)
 
-        # Invariant: stored actions are unscaled in [-1, 1]. Catches
-        # physical-unit actions leaking in from the planner without going
-        # through agent.encode_action first. DQN turns this off so it can
-        # store integer grid indices as float32.
+        # Catch physical-unit actions leaking in without encode_action.
         if self._enforce_unscaled_action_range:
             max_abs = action_c.abs().max().item()
             if max_abs > 1.0 + _ACTION_BOUND_TOL:
@@ -173,10 +163,8 @@ class ReplayBuffer:
             state_c, obs_c, action_c, reward_c, next_state_c, next_obs_c, done_c
         )
 
-        # Paper's SO(2) buffer aug: k random rotations per transition,
-        # pushed alongside the original. Done on the float obs so bilinear
-        # interp doesn't interact with the uint8 quantization noise floor.
-        # Scalars (state, reward, next_state, done) are rotation-invariant.
+        # k rotated copies. Rotate on float obs to stay above uint8 noise floor.
+        # state/reward/next_state/done are rotation-invariant.
         for _ in range(self._so2_aug_k):
             thetas = sample_thetas(batch, self._gen)
             s_aug, o_aug, a_aug, r_aug, ns_aug, no_aug, d_aug = augment_transition_so2(
@@ -209,8 +197,7 @@ class ReplayBuffer:
         next_obs_c: torch.Tensor,
         done_c: torch.Tensor,
     ) -> None:
-        # Wrap-around write a batch of already-cast tensors. Factored out
-        # because the aug path writes k+1 chunks per push().
+        # Wrap-around write; aug path writes k+1 chunks per push().
         batch = state_c.shape[0]
         idxs = (torch.arange(batch) + self._idx) % self.capacity
 
@@ -229,7 +216,7 @@ class ReplayBuffer:
         if self._size == 0:
             raise ValueError("cannot sample from an empty ReplayBuffer")
 
-        # Uniform with replacement. During warmup batch_size > _size will repeat entries.
+        # Uniform with replacement; during warmup batch_size > _size repeats entries.
         idxs = torch.randint(0, self._size, (batch_size,), generator=self._gen)
 
         return Transition(
@@ -246,9 +233,8 @@ class ReplayBuffer:
         return self._size
 
     def state_dict(self) -> dict:
-        # Tensors cloned so a later push() can't mutate the saved copy
-        # before torch.save hits disk. Schema includes quantization params
-        # so a resume catches a mismatched clip/scale (silent corruption).
+        # Clone so a later push() can't mutate the save in flight.
+        # Schema includes quant params so resume catches a mismatched clip/scale.
         return {
             "state": self._state.clone(),
             "obs": self._obs.clone(),
@@ -271,7 +257,7 @@ class ReplayBuffer:
         }
 
     def load_state_dict(self, d: dict) -> None:
-        # Hard schema check: resuming into a differently-shaped buffer is almost always a CLI mistake.
+        # Hard schema check; resuming into a differently-shaped buffer is usually a CLI mistake.
         schema = d["schema"]
         expected = {
             "capacity": self.capacity,
@@ -286,7 +272,7 @@ class ReplayBuffer:
                 f"ReplayBuffer schema mismatch on load: expected {expected}, got {schema}"
             )
 
-        # copy_ into preallocated storage to keep the replay tensors in place.
+        # copy_ into preallocated storage.
         self._state.copy_(d["state"])
         self._obs.copy_(d["obs"])
         self._action.copy_(d["action"])

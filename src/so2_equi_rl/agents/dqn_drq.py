@@ -1,10 +1,8 @@
-"""DrQ-DQN. Subclass of DQNAgent that averages the Bellman target over K
-shift-augmented copies of next_obs and the TD loss over M shift-augmented
-copies of obs. Per-row shift is independent across (copy, row); copies
-are fused into one (n*B, ...) tensor op.
+"""DrQ-DQN. Averages the Bellman target over K shift-augmented copies of
+next_obs and the TD loss over M shift-augmented copies of obs.
 
-Paper sec E: random +/-4 pixel shift. Action is NOT augmented, since pixel shift
-doesn't change world-frame delta actions.
+Paper sec E: random +/-4 pixel shift. Action is not augmented since pixel
+shift doesn't change world-frame delta actions.
 """
 
 from typing import Dict, Tuple, Type
@@ -20,13 +18,13 @@ from so2_equi_rl.configs.dqn_drq import DQNDrQConfig
 from so2_equi_rl.utils import augmentation as aug_mod
 from so2_equi_rl.utils import tile_state
 
-# Fixed offset so the aug RNG is decoupled from DQN-RAD (2023), SAC-DrQ
-# (1337), RAD-SAC (2022), and FERM (3407).
+# Offset so aug RNG is decoupled from DQN-RAD (2023), SAC-DrQ (1337),
+# RAD-SAC (2022), and FERM (3407).
 _AUG_SEED_OFFSET = 4242
 
 
 class DQNDrQAgent(DQNAgent):
-    """DQN with paper-faithful DrQ shift averaging on both sides of the Bellman update."""
+    """DQN with DrQ shift averaging on both sides of the Bellman update."""
 
     def __init__(
         self,
@@ -58,8 +56,8 @@ class DQNDrQAgent(DQNAgent):
         return obs_shifted.to(state.device), state_rep
 
     def update(self, batch: Transition) -> Dict[str, float]:
-        # K shifted copies of next_obs for the target average, M shifted
-        # copies of obs for the TD loss average. Polyak target update at cfg.tau.
+        # K copies of next_obs for the target average, M copies of obs for
+        # the TD loss average. Polyak at cfg.tau.
         batch = batch.to(self.device, non_blocking=True)
 
         reward = batch.reward
@@ -74,7 +72,7 @@ class DQNDrQAgent(DQNAgent):
         M = self.drq_m
 
         # Target side: K shifted copies of next_obs. Greedy over the full
-        # action grid so no action involvement, we argmax away the choice.
+        # action grid, so no action indexing needed.
         next_obs_k, next_state_k = self._shift_copies(
             batch.next_obs, batch.next_state, K
         )
@@ -93,8 +91,8 @@ class DQNDrQAgent(DQNAgent):
             y_k = reward_k + self.gamma * (1.0 - done_k) * q_next_k
             y = y_k.view(K, B, 1).mean(dim=0)  # (B, 1)
 
-        # Current side: M shifted copies of obs. Action is unchanged and
-        # tiled M-fold to index into each shifted copy's Q output.
+        # Current side: M shifted copies of obs. Action tiled M-fold to
+        # index each copy's Q output.
         obs_m, state_m = self._shift_copies(batch.obs, batch.state, M)
         obs_m_tiled = tile_state(obs_m, state_m)
         action_m = batch.action.repeat(M, 1)

@@ -1,4 +1,4 @@
-"""Nets for the SO(2)-equivariant agent. Image encoder, SAC actor, twin-Q critic, built on e2cnn over C_N."""
+"""SO(2)-equivariant networks built on e2cnn/escnn over C_N."""
 
 from so2_equi_rl.networks.sac_heads import (
     CNNActor,

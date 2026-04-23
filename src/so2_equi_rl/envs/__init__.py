@@ -1,10 +1,7 @@
-"""make_env() dispatches to the right backend (BulletArm or ManiSkill)
-from a TrainConfig, so train_*.py scripts stay backend-agnostic.
+"""make_env() dispatches to BulletArm or ManiSkill from a TrainConfig.
 
-EnvStep lives here rather than in wrapper.py so that maniskill_wrapper.py
-can import it without dragging in helping_hands_rl_envs. The hhe __file__
-patch that wrapper.py needs also stays out of this __init__'s import
-path, so ms3-only envs don't need hhe installed.
+EnvStep lives here, not in wrapper.py, so maniskill_wrapper.py can import it
+without pulling in helping_hands_rl_envs.
 """
 
 from typing import NamedTuple
@@ -13,9 +10,7 @@ import torch
 
 
 class EnvStep(NamedTuple):
-    """Return shape for env.step in both backends. Trainers access fields
-    by attribute, not positional unpacking, so adding fields is safe.
-    """
+    """env.step return shape. Accessed by attribute so adding fields is safe."""
 
     state: torch.Tensor
     obs: torch.Tensor
@@ -25,11 +20,10 @@ class EnvStep(NamedTuple):
 
 
 def make_env(cfg, *, seed: int, num_processes: int, num_envs: int = 1):
-    """Build the training or eval env for cfg.env_backend.
+    """Build the train or eval env for cfg.env_backend.
 
-    num_processes is BulletArm's worker count (0 = SingleRunner).
-    num_envs is ManiSkill's GPU-vectorized env count.
-    Only one is meaningful per backend; the other is ignored.
+    num_processes is BulletArm workers (0 = SingleRunner); num_envs is
+    ManiSkill's vec count. Only one matters per backend.
     """
     backend = getattr(cfg, "env_backend", "bulletarm")
     if backend == "bulletarm":
@@ -45,13 +39,12 @@ def make_env(cfg, *, seed: int, num_processes: int, num_envs: int = 1):
             drot=getattr(cfg, "drot", None),
         )
     if backend == "maniskill":
-        # Lazy-imported so BulletArm-only workflows don't need ManiSkill installed.
+        # Lazy import so BulletArm-only workflows don't need ManiSkill installed.
         from so2_equi_rl.envs.maniskill_experts import get_expert
         from so2_equi_rl.envs.maniskill_wrapper import ManiSkillWrapper
 
         wrapper = ManiSkillWrapper(cfg=cfg, seed=seed, num_envs=num_envs)
-        # Register the scripted expert; raises for tasks we haven't wired yet
-        # (e.g. drawer_opening). Fail-loud is preferred to silent no-op at warmup.
+        # Fail loud for unwired tasks rather than silent warmup no-op.
         wrapper.set_expert(get_expert(cfg.env_name))
         return wrapper
     raise ValueError(f"unknown env_backend: {backend!r}")
