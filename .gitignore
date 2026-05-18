@@ -38,3 +38,7 @@ NOTES.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Editor workspace dirs (Cursor / VS Code)
+.vscode/
+.cursor/

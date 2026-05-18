@@ -46,6 +46,7 @@ class Cell(NamedTuple):
     seed: int
     total_steps: int
     per_job_vram_mib: int
+    num_envs: int = 32  # ManiSkill GPU-batched env count; ignored for BulletArm
 
     @property
     def run_tag(self) -> str:
@@ -80,6 +81,7 @@ def expand_cells(spec: dict) -> List[Cell]:
     defaults = spec.get("defaults", {})
     vram_table = spec.get("per_job_vram_mib", {})
     total_steps = int(defaults.get("total_steps", 20000))
+    num_envs = int(defaults.get("num_envs", 32))
 
     # New (preferred) shape: tasks_per_backend: {backend: [task, ...]}.
     # Old shape (tasks + backends at top level) is still supported for
@@ -122,6 +124,7 @@ def expand_cells(spec: dict) -> List[Cell]:
                         seed=int(seed),
                         total_steps=total_steps,
                         per_job_vram_mib=int(vram_table[vram_key]),
+                        num_envs=num_envs,
                     )
                 )
     return cells
@@ -189,7 +192,7 @@ def build_command(cell: Cell, output_dir: Path) -> List[str]:
     if cell.backend == "bulletarm":
         argv += ["--num-processes", "5"]
     elif cell.backend == "maniskill":
-        argv += ["--num-envs", "32"]
+        argv += ["--num-envs", str(cell.num_envs)]
 
     argv += [
         "--seed",

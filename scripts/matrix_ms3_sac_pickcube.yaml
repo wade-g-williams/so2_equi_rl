@@ -1,0 +1,39 @@
+# Focused matrix for recreating the report's MS3 SAC figure on
+# EquiPickCube-v1 (the PickCube-v1 subclass that hides the Panda arm
+# from the depth observation so the scene is rotation-symmetric).
+#
+# Scope: sac x {cnn, equi} x EquiPickCube-v1 x {0, 1, 2, 3} = 8 cells.
+# Matches Fig 6 in final_report.tex (4 seeds, 100k update steps,
+# normalized_dense reward).
+
+defaults:
+  total_steps: 100000
+  num_envs: 16  # 8 GB GPU headroom; original sweep used 32 on bigger card
+
+matrix:
+  algos:
+    - sac
+
+  models:
+    - cnn
+    - equi
+
+  tasks_per_backend:
+    # No bulletarm tasks in this sweep. Empty list is fine for the
+    # expander since the cell loop iterates the dict items.
+    maniskill:
+      - EquiPickCube-v1
+
+  seeds:
+    - 0
+    - 1
+    - 2
+    - 3
+
+per_job_vram_mib:
+  # Same per-cell budget as the main matrix.yaml. With num_envs=16
+  # (vs the matrix.yaml default of 32) the real footprint is lower,
+  # but keeping the budget conservative means the VRAMGate refuses to
+  # double-book a single 8 GB card.
+  maniskill_cnn: 4500
+  maniskill_equi: 7000
